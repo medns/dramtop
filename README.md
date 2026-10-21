@@ -1,72 +1,73 @@
-
-
 # ⚡ dramtop
 
-**An ultra-lightweight (~50 KB), zero-dependency CLI tool for Linux that monitors real-time DRAM memory bandwidth (**`GB/s`**), L1/L2 hardware prefetch, Cgroup CPU throttling, and memory-vs-compute bottlenecks.**
+**An ultra-lightweight (~120 KB), zero-dependency Linux tool that shows real-time DRAM bandwidth for the whole system and for each process, plus L1/L2 hardware prefetch, cgroup CPU throttling, and whether a workload is memory-bound or compute-bound.**
 
 **English** · [简体中文](README_zh-CN.md)
 
-![Latest Release](https://img.shields.io/github/v/release/medns/dramtop?color=2563eb)
-![Build](https://github.com/medns/dramtop/actions/workflows/build.yml/badge.svg)
-![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)
-![Platform](https://img.shields.io/badge/platform-Linux_x86__64_·_ARM64-2563eb.svg)
-
-  
-
+[![Latest Release](https://img.shields.io/github/v/release/medns/dramtop?color=2563eb)](https://github.com/medns/dramtop/releases)
+[![Build](https://github.com/medns/dramtop/actions/workflows/build.yml/badge.svg)](https://github.com/medns/dramtop/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux_x86__64_·_ARM64-2563eb.svg)](#-quick-start)
 
 ![dramtop live terminal dashboard](docs/demo.svg)
-
-
 
 ---
 
 ## 🚀 Quick Start
 
-**Install from GitHub Releases** (single static binary, zero dependencies):
+Download the prebuilt static binary (x86_64 or aarch64) from GitHub Releases:
 
 ```sh
-sudo curl -sSL "https://github.com/medns/dramtop/releases/latest/download/dramtop-linux-$(uname -m)" -o /usr/local/bin/dramtop
+sudo curl -fsSL "https://github.com/medns/dramtop/releases/latest/download/dramtop-linux-$(uname -m)" -o /usr/local/bin/dramtop
 sudo chmod +x /usr/local/bin/dramtop
-dramtop
+sudo dramtop
 ```
 
 ## ✨ Features
 
-| Capability | What it does |
+| Feature | Details |
 |---|---|
-| **System & Process Bandwidth** | Measures real-time DRAM throughput (`GB/s`), channel saturation `%`, and ranks top bandwidth-consuming processes |
-| **Demand vs. HW Prefetch** | Separates CPU demand reads from L1/L2 hardware prefetcher fills across AMD Zen, Intel Xeon/Core, and ARM64 |
-| **Two-Tier Adaptive PMU** | Uses per-CPU counters (`Per-CPU System PMU`) on hosts and auto-fallbacks to per-thread counters inside restricted containers(`Thread-PMU Container Mode`) |
-| **Auto Bandwidth Calibration** | Runs a ~0.25s multi-threaded SIMD + PMU probe at startup to detect achievable peak DRAM bandwidth |
-| **Bottleneck Diagnosis** | Classifies `MEMORY-BOUND`, `COMPUTE-BOUND`, and `LOCK-CONTENTION / CFS-THROTTLED` states in real time |
-| **TUI, Batch & JSON Modes** | In-place `top`-style dashboard with zero scrollback pollution, plus `--batch` and `--json` (`NDJSON`) streaming |
+| Per-process bandwidth | DRAM traffic in `GB/s` for the whole system and for each process, sorted by usage, with utilization relative to the measured peak |
+| Demand vs. prefetch | Splits demand reads from L1/L2 hardware prefetch on AMD Zen and Intel; on Arm64 only the total is shown |
+| Container support | Uses per-CPU counters when the kernel allows them (`Per-CPU System PMU`) and falls back to per-thread counters in restricted containers (`Thread-PMU Container Mode`) |
+| Peak calibration | Measures how much read bandwidth the machine can actually reach, in under a second at startup; use `-c` to set it yourself |
+| Bottleneck hints | Labels the workload `MEMORY-BOUND`, `COMPUTE-BOUND` or `LOCK-CONTENTION / CFS-THROTTLED` from bandwidth, IPC, DRAM misses per 1000 instructions and CFS throttling |
+| Output modes | A full-screen `top`-style view that leaves your scrollback clean, plus `--batch` text and `--json` lines for logs and scripts |
+
+> dramtop counts the cache lines that CPU cores read from DRAM (demand reads and hardware prefetch). Write-backs and device DMA are not counted. On AMD Zen 4 the numbers agree with a software-timed read benchmark to within about 1%.
 
 ## 💻 Usage
 
 ```sh
-dramtop                      # Live TUI dashboard (all processes)
-dramtop -P python3           # Filter by process name
-dramtop -p 12345             # Filter by PID
-dramtop -i 0.25 -c 120       # 0.25s refresh with manual 120 GB/s ceiling
-dramtop -b -n 20 > dram.log  # Batch text mode for logging
-dramtop -J -n 5 | jq .       # JSON Lines (NDJSON) streaming output
+dramtop                      # full-screen view of all processes
+dramtop -P python3           # only processes whose name contains "python3"
+dramtop -p 12345             # only PID 12345
+dramtop -i 0.25 -c 120       # refresh every 0.25s and assume a 120 GB/s peak
+dramtop -b -n 20 > dram.log  # 20 samples as plain text
+dramtop -J -n 5 | jq .       # one JSON object per sample
 ```
 
-| Flag | Description | Hotkeys (TUI) | Action |
+| Flag | Description | Key | Action |
 |---|---|---|---|
-| `-p, --pid <PID>` | Monitor a specific PID | `q` | Quit and restore screen |
-| `-P, --proc <NAME>` | Filter processes by name | `t` / `Tab` | Cycle view (`Split` / `Procs` / `Timeline`) |
-| `-i, --interval <S>` | Refresh interval (default `1.0s`) | `Space` / `p` | Pause / resume live updates |
-| `-n, --count <N>` | Exit after `N` samples | `r` | Reset peak/avg stats & timeline |
-| `-c, --ceiling <GB>` | Override peak DRAM cap (`GB/s`) | `+` / `-` | Step refresh speed (`0.10s` – `5.00s`) |
-| `-b, --batch` | Scroll line-by-line (no TUI) | | |
-| `-J, --json` | Stream NDJSON objects | | |
-| `-v, --version` | Print version and exit | | |
-| `-h, --help` | Show help message | | |
+| `-p, --pid <PID>` | Watch one process, including children it forks | `q` | Quit |
+| `-P, --proc <NAME>` | Watch processes whose name contains NAME | `t` / `Tab` | Switch view (split / processes / timeline) |
+| `-i, --interval <S>` | Refresh interval in seconds (default `1`) | `Space` / `p` | Pause or resume |
+| `-n, --count <N>` | Exit after N samples | `r` | Clear max/avg and the timeline |
+| `-c, --ceiling <GB/s>` | Set the peak bandwidth instead of measuring it | `+` / `-` | Faster / slower refresh (0.1s to 5s) |
+| `-b, --batch` | One line of text per sample instead of the full-screen view | | |
+| `-J, --json` | One JSON object per sample | | |
+| `-v, --version` | Print the version | | |
+| `-h, --help` | Show help | | |
+
+## 🔐 Requirements
+
+- Hardware performance counters. Bare metal works; a VM needs a virtual PMU, which most cloud VMs and WSL2 don't provide.
+- Root, or `CAP_PERFMON` on Linux 5.8+. Normal users only see their own processes and need `kernel.perf_event_paranoid` set to 2 or lower; the system-wide `Per-CPU System PMU` mode needs 0 or lower.
+- Docker blocks `perf_event_open` by default, so start the container with `--cap-add PERFMON` (or `--privileged`). On Kubernetes, add the `PERFMON` capability.
 
 ## 🛠️ Build from Source
 
-Requires only `gcc` (or `clang`) and standard Linux headers:
+You need `gcc` or `clang` and the Linux kernel headers:
 
 ```sh
 git clone https://github.com/medns/dramtop.git
@@ -74,7 +75,7 @@ cd dramtop
 make && sudo make install
 ```
 
-Build a portable static binary across any Linux distribution:
+To build a static binary (this is how the release builds are made, with musl on Alpine):
 
 ```sh
 make static
