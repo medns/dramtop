@@ -50,6 +50,13 @@ sudo yum install -y dramtop
 | **Bottleneck Diagnosis** | Classifies `MEMORY-BOUND`, `COMPUTE-BOUND`, and `LOCK-CONTENTION / CFS-THROTTLED` states in real time |
 | **TUI, Batch & JSON Modes** | In-place `top`-style dashboard with zero scrollback pollution, plus `--batch` and `--json` (`NDJSON`) streaming |
 
+### Adaptive Monitor Modes (`Monitor Scope`)
+
+`dramtop` automatically selects the best hardware PMU collection engine based on system permissions:
+
+- **`Per-CPU System PMU (pid=-1, N CPUs, Kernel+User)`**: Active on bare-metal hosts, VMs, or privileged containers (`perf_event_paranoid <= 0` or `CAP_PERFMON`). Attaches counters to each logical CPU core to capture **100% of system DRAM traffic**, including kernel page-cache, `kswapd`, and short-lived processes (attributed to `[kernel/ephem]`).
+- **`All Processes (Thread-PMU Container Mode)`**: Automatic fallback inside unprivileged Docker / Kubernetes containers (`perf_event_paranoid = 2`) where system-wide `pid=-1` counters are blocked by the host kernel. Dynamically attaches user-space PMU counters (`exclude_kernel=1`) to every thread in `/proc/<pid>/task/*` with zero configuration.
+
 ## 💻 Usage
 
 ```sh
