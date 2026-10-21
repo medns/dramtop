@@ -54,8 +54,9 @@ dramtop -J -n 5 | jq .       # one JSON object per sample
 | `-i, --interval <S>` | Refresh interval in seconds (default `1`) | `Space` / `p` | Pause or resume |
 | `-n, --count <N>` | Exit after N samples | `r` | Clear max/avg and the timeline |
 | `-c, --ceiling <GB/s>` | Set the peak bandwidth instead of measuring it | `+` / `-` | Faster / slower refresh (0.1s to 5s) |
-| `-b, --batch` | One line of text per sample instead of the full-screen view | | |
+| `-b, --batch` | One line of text per sample instead of the full-screen view (automatic when output is not a terminal or `TERM` is unset or `dumb`) | | |
 | `-J, --json` | One JSON object per sample | | |
+| `--no-color` | Disable colors (setting `NO_COLOR` also works) | | |
 | `-v, --version` | Print the version | | |
 | `-h, --help` | Show help | | |
 

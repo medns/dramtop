@@ -37,7 +37,7 @@
 #include <unistd.h>
 
 #ifndef DRAMTOP_VERSION
-#define DRAMTOP_VERSION "1.1.0"
+#define DRAMTOP_VERSION "1.1.1"
 #endif
 
 #ifndef PERF_FLAG_FD_CLOEXEC
@@ -162,7 +162,7 @@ static struct {
     double interval;
     long max_count;
     double ceiling;
-    bool batch, json;
+    bool batch, json, no_color;
 
     /* environment */
     pid_t self;
@@ -1521,9 +1521,11 @@ static void usage(FILE *out) {
             "  -c, --ceiling <GB/s>   DRAM bandwidth ceiling; skips the startup calibration\n"
             "  -b, --batch            Line-by-line output instead of the full-screen TUI\n"
             "  -J, --json             JSON Lines output, one object per sample\n"
+            "      --no-color         Disable colors\n"
             "  -v, --version          Print version and exit\n"
             "  -h, --help             Show this help\n\n"
-            "Colors are disabled when NO_COLOR is set or output is not a terminal.\n",
+            "Colors are also disabled when NO_COLOR is set or output is not a terminal.\n"
+            "If TERM is unset or \"dumb\", line output is used instead of the full-screen TUI.\n",
             DRAMTOP_VERSION);
 }
 
@@ -1548,13 +1550,16 @@ static long parse_long(const char *opt, const char *s, long lo, long hi) {
     return v;
 }
 
+enum { OPT_NO_COLOR = 256 };
+
 static void parse_args(int argc, char **argv) {
     static const struct option opts[] = {
         {"pid", required_argument, 0, 'p'},     {"proc", required_argument, 0, 'P'},
         {"interval", required_argument, 0, 'i'}, {"count", required_argument, 0, 'n'},
         {"ceiling", required_argument, 0, 'c'},  {"batch", no_argument, 0, 'b'},
-        {"json", no_argument, 0, 'J'},           {"version", no_argument, 0, 'v'},
-        {"help", no_argument, 0, 'h'},           {0, 0, 0, 0},
+        {"json", no_argument, 0, 'J'},           {"no-color", no_argument, 0, OPT_NO_COLOR},
+        {"version", no_argument, 0, 'v'},        {"help", no_argument, 0, 'h'},
+        {0, 0, 0, 0},
     };
     int opt;
     while ((opt = getopt_long(argc, argv, "p:P:i:n:c:bJvh", opts, NULL)) != -1) {
@@ -1566,6 +1571,7 @@ static void parse_args(int argc, char **argv) {
         case 'c': g.ceiling = parse_double("--ceiling", optarg, 0.1, 1e6); break;
         case 'b': g.batch = true; break;
         case 'J': g.json = g.batch = true; break;
+        case OPT_NO_COLOR: g.no_color = true; break;
         case 'v': printf("dramtop v%s\n", DRAMTOP_VERSION); exit(0);
         case 'h': usage(stdout); exit(0);
         default: fputs("Try 'dramtop --help'.\n", stderr); exit(2);
@@ -1583,9 +1589,14 @@ static void parse_args(int argc, char **argv) {
 
 int main(int argc, char **argv) {
     parse_args(argc, argv);
-    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) g.batch = true;
-    const char *no_color = getenv("NO_COLOR");
-    g_color = !g.json && isatty(STDOUT_FILENO) && !(no_color && *no_color);
+    const char *term = getenv("TERM"), *no_color = getenv("NO_COLOR");
+    /* Same rule as git: no TERM means no color and no cursor addressing, so the TUI cannot work either. */
+    bool dumb = !term || !*term || !strcmp(term, "dumb");
+    bool tty = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
+    if (tty && dumb && !g.batch)
+        fputs("dramtop: TERM is unset or \"dumb\", using line output (set TERM for the full-screen view)\n", stderr);
+    if (!tty || dumb) g.batch = true;
+    g_color = !g.json && !g.no_color && !dumb && isatty(STDOUT_FILENO) && !(no_color && *no_color);
 
     install_handler(SIGINT);
     install_handler(SIGTERM);
@@ -1612,7 +1623,7 @@ int main(int argc, char **argv) {
     if (g.ceiling > 0) {
         g.peak = g.ceiling;
     } else {
-        bool tell = isatty(STDERR_FILENO) && !g.json;
+        bool tell = isatty(STDERR_FILENO) && !g.json && !dumb;
         if (tell) fputs("dramtop: measuring peak DRAM bandwidth (skip with -c <GB/s>)...", stderr);
         g.peak = calibrate();
         if (tell) fputs("\r\033[K", stderr);
