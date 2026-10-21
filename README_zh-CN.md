@@ -1,21 +1,22 @@
-<div align="center">
+
 
 # ⚡ dramtop
 
-**一款超轻量（~50 KB）、零依赖、单 C 语言文件的 Linux 命令行工具，实时监控系统及各进程的 DRAM 内存带宽（`GB/s`）使用情况、L1/L2 硬件预取、Cgroup 容器 CPU 限流及内存/算力瓶颈状态。**
+**一款超轻量（~50 KB）、零依赖的 Linux 命令行工具，实时监控 DRAM 内存带宽（**`GB/s`**）、L1/L2 硬件预取、Cgroup 容器 CPU 限流及内存/算力瓶颈状态。**
 
 [English](README.md) · **简体中文**
 
-[![Latest Release](https://img.shields.io/github/v/release/medns/dramtop?color=2563eb)](https://github.com/medns/dramtop/releases)
-[![Build](https://github.com/medns/dramtop/actions/workflows/build.yml/badge.svg)](https://github.com/medns/dramtop/actions/workflows/build.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Linux_x86__64_·_ARM64-2563eb.svg)](#-快速开始)
+![Latest Release](https://img.shields.io/github/v/release/medns/dramtop?color=2563eb)
+![Build](https://github.com/medns/dramtop/actions/workflows/build.yml/badge.svg)
+![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)
+![Platform](https://img.shields.io/badge/platform-Linux_x86__64_·_ARM64-2563eb.svg)
 
-<br/>
+  
 
-<img src="docs/demo.svg" alt="dramtop 实时终端监控面板" width="100%"/>
 
-</div>
+![dramtop 实时终端监控面板](docs/demo.svg)
+
+
 
 ---
 
@@ -45,17 +46,10 @@ sudo yum install -y dramtop
 |---|---|
 | **全局与进程级内存带宽** | 实时采集系统总 DRAM 吞吐量（`GB/s`）、通道饱和度 `%`，并按内存带宽从高到低排列进程排行榜 |
 | **按需读取与硬件预取拆分** | 精确区分 CPU 按需读取（Demand Read）与 L1/L2 硬件预取（HW Prefetch），支持 AMD Zen、Intel 与 ARM64 |
-| **双层自适应 PMU 引擎** | 宿主机自动启用全核系统级 PMU（`pid=-1`），受限云容器内自动无缝降级为线程级 PMU 穿透采集 |
+| **双层自适应 PMU 引擎** | 宿主机自动启用全核系统级计数器（`Per-CPU System PMU`），受限云容器内自动无缝降级为线程级计数器（`Thread-PMU Container Mode`） |
 | **零配置带宽上限校准** | 启动时自动执行 ~0.25s 多线程 SIMD + PMU 内存探针，实测当前机器可达的 DRAM 峰值带宽上限 |
 | **实时瓶颈状态诊断** | 自动判定 `MEMORY-BOUND`（访存带宽受限）、`COMPUTE-BOUND`（算力受限）及 `LOCK-CONTENTION / CFS-THROTTLED` |
 | **原地 TUI 与 JSON 流式输出** | 默认采用类 `top` 原地刷新界面（退出不留刷屏历史），支持 `--batch` 日志模式与 `--json`（`NDJSON`）流式输出 |
-
-### 两种自适应采集模式（`Monitor Scope`）
-
-`dramtop` 启动时会自动探测当前环境的内核权限，并在以下两种硬件 PMU 模式间无缝切换：
-
-- **`Per-CPU System PMU (pid=-1, N CPUs, Kernel+User)`（全核系统级模式）**：在物理机、虚拟机或特权容器（`perf_event_paranoid <= 0` 或具备 `CAP_PERFMON`）中自动启用。直接按物理/逻辑 CPU 核心挂载全局计数器，**100% 捕获整机 DRAM 流量**（包含内核态 PageCache、`kswapd` 及毫秒级短命子进程，未归属到具体常驻进程的流量会汇总显示为 `[kernel/ephem]`）。
-- **`All Processes (Thread-PMU Container Mode)`（容器线程穿透模式）**：在受限的 Docker / Kubernetes 云容器（`perf_event_paranoid = 2`，宿主机禁止 `pid=-1` 全局监控）中自动降级启用。无需任何特殊权限或配置，自动遍历 `/proc/<pid>/task/*` 为所有活跃线程挂载用户态 PMU 计数器（`exclude_kernel=1`）并实时汇总。
 
 ## 💻 使用说明
 

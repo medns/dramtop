@@ -1,21 +1,22 @@
-<div align="center">
+
 
 # ⚡ dramtop
 
-**An ultra-lightweight (~50 KB), zero-dependency, single-file C CLI tool for Linux that monitors real-time system and per-process DRAM memory bandwidth (`GB/s`), L1/L2 hardware prefetch, Cgroup CPU throttling, and memory-vs-compute bottlenecks.**
+**An ultra-lightweight (~50 KB), zero-dependency CLI tool for Linux that monitors real-time DRAM memory bandwidth (**`GB/s`**), L1/L2 hardware prefetch, Cgroup CPU throttling, and memory-vs-compute bottlenecks.**
 
 **English** · [简体中文](README_zh-CN.md)
 
-[![Latest Release](https://img.shields.io/github/v/release/medns/dramtop?color=2563eb)](https://github.com/medns/dramtop/releases)
-[![Build](https://github.com/medns/dramtop/actions/workflows/build.yml/badge.svg)](https://github.com/medns/dramtop/actions/workflows/build.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Linux_x86__64_·_ARM64-2563eb.svg)](#-quick-start)
+![Latest Release](https://img.shields.io/github/v/release/medns/dramtop?color=2563eb)
+![Build](https://github.com/medns/dramtop/actions/workflows/build.yml/badge.svg)
+![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)
+![Platform](https://img.shields.io/badge/platform-Linux_x86__64_·_ARM64-2563eb.svg)
 
-<br/>
+  
 
-<img src="docs/demo.svg" alt="dramtop live terminal dashboard" width="100%"/>
 
-</div>
+![dramtop live terminal dashboard](docs/demo.svg)
+
+
 
 ---
 
@@ -45,17 +46,10 @@ sudo yum install -y dramtop
 |---|---|
 | **System & Process Bandwidth** | Measures real-time DRAM throughput (`GB/s`), channel saturation `%`, and ranks top bandwidth-consuming processes |
 | **Demand vs. HW Prefetch** | Separates CPU demand reads from L1/L2 hardware prefetcher fills across AMD Zen, Intel Xeon/Core, and ARM64 |
-| **Two-Tier Adaptive PMU** | Uses per-CPU counters (`pid=-1`) on hosts and auto-fallbacks to per-thread counters inside restricted containers |
+| **Two-Tier Adaptive PMU** | Uses per-CPU counters (`Per-CPU System PMU`) on hosts and auto-fallbacks to per-thread counters inside restricted containers(`Thread-PMU Container Mode`) |
 | **Auto Bandwidth Calibration** | Runs a ~0.25s multi-threaded SIMD + PMU probe at startup to detect achievable peak DRAM bandwidth |
 | **Bottleneck Diagnosis** | Classifies `MEMORY-BOUND`, `COMPUTE-BOUND`, and `LOCK-CONTENTION / CFS-THROTTLED` states in real time |
 | **TUI, Batch & JSON Modes** | In-place `top`-style dashboard with zero scrollback pollution, plus `--batch` and `--json` (`NDJSON`) streaming |
-
-### Adaptive Monitor Modes (`Monitor Scope`)
-
-`dramtop` automatically selects the best hardware PMU collection engine based on system permissions:
-
-- **`Per-CPU System PMU (pid=-1, N CPUs, Kernel+User)`**: Active on bare-metal hosts, VMs, or privileged containers (`perf_event_paranoid <= 0` or `CAP_PERFMON`). Attaches counters to each logical CPU core to capture **100% of system DRAM traffic**, including kernel page-cache, `kswapd`, and short-lived processes (attributed to `[kernel/ephem]`).
-- **`All Processes (Thread-PMU Container Mode)`**: Automatic fallback inside unprivileged Docker / Kubernetes containers (`perf_event_paranoid = 2`) where system-wide `pid=-1` counters are blocked by the host kernel. Dynamically attaches user-space PMU counters (`exclude_kernel=1`) to every thread in `/proc/<pid>/task/*` with zero configuration.
 
 ## 💻 Usage
 
