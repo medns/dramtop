@@ -1,23 +1,28 @@
-CC      ?= gcc
-CFLAGS  ?= -O3 -Wall -Wextra -march=native -pthread
-LDFLAGS ?= -pthread -lm
+CC      ?= cc
+STRIP   ?= strip
+CFLAGS  ?= -O2 -Wall -Wextra
 PREFIX  ?= /usr/local
+VERSION ?=
 
-.PHONY: all static test clean install uninstall
+override CFLAGS += -std=gnu11 -pthread
+ifneq ($(VERSION),)
+override CPPFLAGS += -DDRAMTOP_VERSION='"$(VERSION)"'
+endif
+
+.PHONY: all static test install uninstall clean
 
 all: dramtop
 
 dramtop: dramtop.c
-	$(CC) $(CFLAGS) dramtop.c -o dramtop $(LDFLAGS)
-	strip dramtop || true
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< -o $@ $(LDLIBS)
 
 static: dramtop.c
-	$(CC) $(CFLAGS) -static dramtop.c -o dramtop-static $(LDFLAGS)
-	strip dramtop-static || true
+	$(CC) $(CPPFLAGS) $(CFLAGS) -static $(LDFLAGS) $< -o dramtop-static $(LDLIBS)
+	$(STRIP) dramtop-static
 
 test: dramtop
 	./dramtop --version
-	./dramtop --help >/dev/null
+	./dramtop --help > /dev/null
 
 install: dramtop
 	install -d $(DESTDIR)$(PREFIX)/bin
