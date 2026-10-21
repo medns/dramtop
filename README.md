@@ -47,14 +47,14 @@ sudo yum install -y dramtop
 | **Demand vs. HW Prefetch** | Separates CPU demand reads from L1/L2 hardware prefetcher fills across AMD Zen, Intel Xeon/Core, and ARM64 |
 | **Two-Tier Adaptive PMU** | Uses per-CPU counters (`pid=-1`) on hosts and auto-fallbacks to per-thread counters inside restricted containers |
 | **Auto Bandwidth Calibration** | Runs a ~0.25s multi-threaded SIMD + PMU probe at startup to detect achievable peak DRAM bandwidth |
-| **Bottleneck Diagnosis** | Classifies `MEMORY-BOUND`, `COMPUTE-BOUND`, and `LOCK-CONTENTION / THROTTLED` states in real time |
+| **Bottleneck Diagnosis** | Classifies `MEMORY-BOUND`, `COMPUTE-BOUND`, and `LOCK-CONTENTION / CFS-THROTTLED` states in real time |
 | **TUI, Batch & JSON Modes** | In-place `top`-style dashboard with zero scrollback pollution, plus `--batch` and `--json` (`NDJSON`) streaming |
 
 ## 💻 Usage
 
 ```sh
 dramtop                      # Live TUI dashboard (all processes)
-dramtop -P llama-server      # Filter by process name
+dramtop -P python3           # Filter by process name
 dramtop -p 12345             # Filter by PID
 dramtop -i 0.25 -c 120       # 0.25s refresh with manual 120 GB/s ceiling
 dramtop -b -n 20 > dram.log  # Batch text mode for logging

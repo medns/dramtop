@@ -47,14 +47,14 @@ sudo yum install -y dramtop
 | **按需读取与硬件预取拆分** | 精确区分 CPU 按需读取（Demand Read）与 L1/L2 硬件预取（HW Prefetch），支持 AMD Zen、Intel 与 ARM64 |
 | **双层自适应 PMU 引擎** | 宿主机自动启用全核系统级 PMU（`pid=-1`），受限云容器内自动无缝降级为线程级 PMU 穿透采集 |
 | **零配置带宽上限校准** | 启动时自动执行 ~0.25s 多线程 SIMD + PMU 内存探针，实测当前机器可达的 DRAM 峰值带宽上限 |
-| **实时瓶颈状态诊断** | 自动判定 `MEMORY-BOUND`（内存带宽受限）、`COMPUTE-BOUND`（算力受限）及 `LOCK-CONTENTION / THROTTLED` |
+| **实时瓶颈状态诊断** | 自动判定 `MEMORY-BOUND`（访存带宽受限）、`COMPUTE-BOUND`（算力受限）及 `LOCK-CONTENTION / CFS-THROTTLED` |
 | **原地 TUI 与 JSON 流式输出** | 默认采用类 `top` 原地刷新界面（退出不留刷屏历史），支持 `--batch` 日志模式与 `--json`（`NDJSON`）流式输出 |
 
 ## 💻 使用说明
 
 ```sh
 dramtop                      # 启动实时 TUI 仪表盘（默认监控全部进程）
-dramtop -P llama-server      # 按进程名过滤监控
+dramtop -P python3           # 按进程名过滤监控
 dramtop -p 12345             # 按进程 PID 过滤监控
 dramtop -i 0.25 -c 120       # 0.25s 高频刷新，并手动指定带宽上限为 120 GB/s
 dramtop -b -n 20 > dram.log  # 批处理逐行文本输出（用于日志记录）

@@ -5,8 +5,7 @@
  * hardware PMU counters directly (no external `perf` binary required) to
  * measure real-time system-wide & per-process DRAM memory channel bandwidth
  * (GB/s), L1/L2 hardware prefetcher traffic, IPC, and diagnose Memory-Bound
- * vs Compute-Bound vs Lock-Contention states (ideal for LLM inference like
- * llama.cpp / vLLM / SGLang / Ollama / HPC / Databases).
+ * vs Compute-Bound vs Lock-Contention states across any Linux workload.
  *
  * Build:
  *   gcc -O3 -march=native -pthread dramtop.c -o dramtop -lm
@@ -740,16 +739,16 @@ static void diagnose_bottleneck(double total_bw_gbs, double util_pct, double cpu
         snprintf(status_out, status_len, "IDLE");
         *color_out = 90;
     } else if (util_pct >= 42.0) {
-        snprintf(status_out, status_len, "MEMORY-BOUND (Decode / BW Saturated)");
+        snprintf(status_out, status_len, "MEMORY-BOUND (DRAM BW Saturated)");
         *color_out = 32;
     } else if ((throttled_delta > 15 || (cpu_quota_ratio > 0.88 && ipc < 0.32)) && util_pct < 42.0) {
-        snprintf(status_out, status_len, "LOCK-CONTENTION / THROTTLED");
+        snprintf(status_out, status_len, "LOCK-CONTENTION / CFS-THROTTLED");
         *color_out = 31;
     } else if (cpu_pct > 150.0 && util_pct < 42.0) {
-        snprintf(status_out, status_len, "COMPUTE-BOUND (Prefill / Matrix Math)");
+        snprintf(status_out, status_len, "COMPUTE-BOUND (Cache-Resident)");
         *color_out = 34;
     } else {
-        snprintf(status_out, status_len, "ACTIVE (Mixed Workload)");
+        snprintf(status_out, status_len, "ACTIVE (Balanced Workload)");
         *color_out = 33;
     }
 }
@@ -1109,7 +1108,7 @@ static void print_usage(const char *prog) {
     printf("  %s [options]\n\n", prog);
     printf("Options:\n");
     printf("  -p, --pid <PID>        Monitor only a specific process PID (default: all active processes)\n");
-    printf("  -P, --proc <NAME>      Monitor only processes matching NAME (e.g., llama-server)\n");
+    printf("  -P, --proc <NAME>      Monitor only processes matching NAME (e.g., python3, postgres)\n");
     printf("  -i, --interval <SEC>   Refresh interval in seconds (default: 1.0)\n");
     printf("  -n, --count <N>        Exit after N samples (default: 0 = infinite)\n");
     printf("  -c, --ceiling <GB/s>   Override DRAM bandwidth ceiling in GB/s (default: auto-calibrate)\n");
