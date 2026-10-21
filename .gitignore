@@ -1,0 +1,12 @@
+# Build artifacts
+dramtop
+dramtop-static
+*.o
+*.out
+*.exe
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

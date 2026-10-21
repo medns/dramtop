@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 548" width="100%" height="100%">
+  <defs>
+    <style>
+      .bg { fill: #0d1117; rx: 10px; ry: 10px; stroke: #30363d; stroke-width: 1.5; }
+      .titlebar { fill: #161b22; }
+      .txt { font-family: 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12.4px; fill: #c9d1d9; white-space: pre; }
+      .cyan { fill: #39c5cf; font-weight: 700; }
+      .white { fill: #f0f6fc; font-weight: 700; }
+      .yellow { fill: #e3b341; font-weight: 700; }
+      .green { fill: #3fb950; font-weight: 700; }
+      .red { fill: #ff7b72; font-weight: 700; }
+      .blue { fill: #58a6ff; font-weight: 700; }
+      .purple { fill: #d2a8ff; font-weight: 700; }
+      .gray { fill: #8b949e; }
+      .f0 { opacity: 0; animation: a0 6.4s steps(1, end) infinite; }
+      @keyframes a0 { 0% { opacity: 1; } 12.50% { opacity: 0; } 100% { opacity: 0; } }
+      .f1 { opacity: 0; animation: a1 6.4s steps(1, end) infinite; }
+      @keyframes a1 { 0% { opacity: 0; } 12.50% { opacity: 1; } 25.00% { opacity: 0; } 100% { opacity: 0; } }
+      .f2 { opacity: 0; animation: a2 6.4s steps(1, end) infinite; }
+      @keyframes a2 { 0% { opacity: 0; } 25.00% { opacity: 1; } 37.50% { opacity: 0; } 100% { opacity: 0; } }
+      .f3 { opacity: 0; animation: a3 6.4s steps(1, end) infinite; }
+      @keyframes a3 { 0% { opacity: 0; } 37.50% { opacity: 1; } 50.00% { opacity: 0; } 100% { opacity: 0; } }
+      .f4 { opacity: 0; animation: a4 6.4s steps(1, end) infinite; }
+      @keyframes a4 { 0% { opacity: 0; } 50.00% { opacity: 1; } 62.50% { opacity: 0; } 100% { opacity: 0; } }
+      .f5 { opacity: 0; animation: a5 6.4s steps(1, end) infinite; }
+      @keyframes a5 { 0% { opacity: 0; } 62.50% { opacity: 1; } 75.00% { opacity: 0; } 100% { opacity: 0; } }
+      .f6 { opacity: 0; animation: a6 6.4s steps(1, end) infinite; }
+      @keyframes a6 { 0% { opacity: 0; } 75.00% { opacity: 1; } 87.50% { opacity: 0; } 100% { opacity: 0; } }
+      .f7 { opacity: 0; animation: a7 6.4s steps(1, end) infinite; }
+      @keyframes a7 { 0% { opacity: 0; } 87.50% { opacity: 1; } 100.00% { opacity: 0; } 100% { opacity: 0; } }
+    </style>
+    <clipPath id="win">
+      <rect x="0" y="0" width="980" height="548" rx="10" ry="10"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#win)">
+    <rect class="bg" x="0" y="0" width="980" height="548"/>
+    <rect class="titlebar" x="0" y="0" width="980" height="34"/>
+    <circle cx="20" cy="17" r="6" fill="#ff5f56"/>
+    <circle cx="40" cy="17" r="6" fill="#ffbd2e"/>
+    <circle cx="60" cy="17" r="6" fill="#27c93f"/>
+    <text x="490" y="22" text-anchor="middle" class="txt gray" font-size="12">root@epyc-server: ~ &#8212; dramtop</text>
+
+    <text x="18" y="56" class="txt cyan">==========================================================================================================</text>
+    <text x="18" y="74" class="txt" xml:space="preserve"><tspan class="white"> dramtop v1.0.0</tspan>  |  CPU: <tspan class="yellow">AMD EPYC 9754 128-Core Processor</tspan> (Quota: 32.0 cores / 64 logical)</text>
+    <text x="18" y="92" class="txt" xml:space="preserve"> PMU Backend   : AMD Zen Core PMU (L1/L2 Demand + HW Prefetch DRAM Fills)</text>
+    <text x="18" y="110" class="txt" xml:space="preserve"> Monitor Scope : <tspan class="green">Per-CPU System PMU (pid=-1, 64 CPUs, Kernel+User)</tspan> (18 procs)  |  Refresh: 1.00s  |  View: <tspan class="purple">Split</tspan></text>
+    <text x="18" y="128" class="txt cyan">----------------------------------------------------------------------------------------------------------</text>
+    <text x="18" y="222" class="txt cyan">================================== [ TOP PROCESSES BY DRAM BANDWIDTH ] ===================================</text>
+    <text x="18" y="240" class="txt white" xml:space="preserve"> PID     | PROCESS         | THR  | DRAM TOTAL  | DEMAND RD  | HW PREFETCH | DRAM UTIL%       | CPU%   | IPC  | BOTTLENECK</text>
+    <text x="18" y="258" class="txt">----------------------------------------------------------------------------------------------------------</text>
+    <text x="18" y="350" class="txt cyan">=================================== [ REAL-TIME ROLLING TIMELINE ] =======================================</text>
+    <text x="18" y="368" class="txt white" xml:space="preserve"> TIME     | DRAM TOTAL  | DEMAND RD  | HW PREFETCH | DRAM UTIL%       | CPU%   | IPC  | TOP PROCESS   | DIAGNOSIS</text>
+    <text x="18" y="386" class="txt">----------------------------------------------------------------------------------------------------------</text>
+    <text x="18" y="502" class="txt cyan">----------------------------------------------------------------------------------------------------------</text>
+    <text x="18" y="522" class="txt" xml:space="preserve"> Keys: [<tspan class="yellow">q</tspan>] Quit  [<tspan class="yellow">t</tspan>] View  [<tspan class="yellow">Space</tspan>] Pause  [<tspan class="yellow">r</tspan>] Reset  [<tspan class="yellow">+</tspan>/<tspan class="yellow">-</tspan>] Speed (1.00s)  (-b batch / -J json)</text>
+    <g class="f0">
+      <text x="18" y="146" class="txt" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="green">------------------------------</tspan>] <tspan class="cyan">  0.02 GB/s</tspan> (  0.0% of 82.8 GB/s Cap)</text>
+      <text x="18" y="164" class="txt" xml:space="preserve">   &#9500;&#9472; Demand Rd: <tspan class="white">  0.01 GB/s</tspan>   &#9500;&#9472; HW Prefetch: <tspan class="white">  0.01 GB/s</tspan>   &#9500;&#9472; Session Peak/Avg: <tspan class="yellow"> 0.02</tspan> / <tspan class="green"> 0.02 GB/s</tspan></text>
+      <text x="18" y="182" class="txt" xml:space="preserve"><tspan class="white"> CPU Quota Util</tspan>: [<tspan class="green">------------------------------</tspan>] <tspan class="white">    12%</tspan>     (IPC: <tspan class="white">0.65</tspan> | Throttled: 0)</text>
+      <text x="18" y="200" class="txt" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="gray">IDLE</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">node</tspan>)</text>
+      <text x="18" y="276" class="txt" xml:space="preserve"> 3430603 | node            |   45 |   0.02 GB/s |  0.01 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |    12% | 0.65 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="294" class="txt" xml:space="preserve"> 3314524 | llama-server    |   83 |   0.00 GB/s |  0.00 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     0% | 0.00 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="312" class="txt" xml:space="preserve"> 0       | [kernel/ephem]  |   64 |   0.00 GB/s |  0.00 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     0% | 0.41 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="330" class="txt" xml:space="preserve"> 3430513 | python3         |   16 |   0.00 GB/s |  0.00 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     0% | 0.00 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="404" class="txt" xml:space="preserve"> 17:24:41 |   0.02 GB/s |  0.01 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |    12% | 0.65 | node          | <tspan class="gray">IDLE</tspan></text>
+    </g>
+    <g class="f1">
+      <text x="18" y="146" class="txt" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="green">########----------------------</tspan>] <tspan class="cyan"> 22.55 GB/s</tspan> ( 27.2% of 82.8 GB/s Cap)</text>
+      <text x="18" y="164" class="txt" xml:space="preserve">   &#9500;&#9472; Demand Rd: <tspan class="white">  1.78 GB/s</tspan>   &#9500;&#9472; HW Prefetch: <tspan class="white"> 20.77 GB/s</tspan>   &#9500;&#9472; Session Peak/Avg: <tspan class="yellow">22.55</tspan> / <tspan class="green">11.29 GB/s</tspan></text>
+      <text x="18" y="182" class="txt" xml:space="preserve"><tspan class="white"> CPU Quota Util</tspan>: [<tspan class="red">###########################---</tspan>] <tspan class="white">  2840%</tspan>     (IPC: <tspan class="white">1.18</tspan> | Throttled: 0)</text>
+      <text x="18" y="200" class="txt" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="blue">COMPUTE-BOUND (Prefill / Matrix Math)</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">llama-server</tspan>)</text>
+      <text x="18" y="276" class="txt" xml:space="preserve"> 3314524 | llama-server    |   83 |  22.51 GB/s |  1.76 GB/s |  20.75 GB/s | [<tspan class="green">##------</tspan>]  27.2% |  2832% | 1.18 | <tspan class="blue">COMPUTE-BOUND (Prefill / Matrix Math)</tspan></text>
+      <text x="18" y="294" class="txt" xml:space="preserve"> 0       | [kernel/ephem]  |   64 |   0.03 GB/s |  0.01 GB/s |   0.02 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     5% | 0.62 | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+      <text x="18" y="312" class="txt" xml:space="preserve"> 3430603 | node            |   45 |   0.01 GB/s |  0.01 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     3% | 0.71 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="330" class="txt" xml:space="preserve"> 3430513 | python3         |   16 |   0.00 GB/s |  0.00 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     0% | 0.00 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="404" class="txt" xml:space="preserve"> 17:24:41 |   0.02 GB/s |  0.01 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |    12% | 0.65 | node          | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="422" class="txt" xml:space="preserve"> 17:24:42 |  22.55 GB/s |  1.78 GB/s |  20.77 GB/s | [<tspan class="green">##------</tspan>]  27.2% |  2840% | 1.18 | llama-server  | <tspan class="blue">COMPUTE-BOUND (Prefill / Matrix Math)</tspan></text>
+    </g>
+    <g class="f2">
+      <text x="18" y="146" class="txt" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="yellow">###################-----------</tspan>] <tspan class="cyan"> 53.09 GB/s</tspan> ( 64.1% of 82.8 GB/s Cap)</text>
+      <text x="18" y="164" class="txt" xml:space="preserve">   &#9500;&#9472; Demand Rd: <tspan class="white">  1.81 GB/s</tspan>   &#9500;&#9472; HW Prefetch: <tspan class="white"> 51.28 GB/s</tspan>   &#9500;&#9472; Session Peak/Avg: <tspan class="yellow">53.09</tspan> / <tspan class="green">25.22 GB/s</tspan></text>
+      <text x="18" y="182" class="txt" xml:space="preserve"><tspan class="white"> CPU Quota Util</tspan>: [<tspan class="yellow">##############----------------</tspan>] <tspan class="white">  1498%</tspan>     (IPC: <tspan class="white">0.77</tspan> | Throttled: 0)</text>
+      <text x="18" y="200" class="txt" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">llama-server</tspan>)</text>
+      <text x="18" y="276" class="txt" xml:space="preserve"> 3314524 | llama-server    |   83 |  53.05 GB/s |  1.80 GB/s |  51.25 GB/s | [<tspan class="yellow">#####---</tspan>]  64.1% |  1495% | 0.77 | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="294" class="txt" xml:space="preserve"> 0       | [kernel/ephem]  |   64 |   0.03 GB/s |  0.01 GB/s |   0.02 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     2% | 0.60 | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+      <text x="18" y="312" class="txt" xml:space="preserve"> 3430513 | python3         |   16 |   0.01 GB/s |  0.00 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     1% | 0.88 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="330" class="txt" xml:space="preserve"> 3430603 | node            |   45 |   0.00 GB/s |  0.00 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     0% | 0.00 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="404" class="txt" xml:space="preserve"> 17:24:41 |   0.02 GB/s |  0.01 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |    12% | 0.65 | node          | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="422" class="txt" xml:space="preserve"> 17:24:42 |  22.55 GB/s |  1.78 GB/s |  20.77 GB/s | [<tspan class="green">##------</tspan>]  27.2% |  2840% | 1.18 | llama-server  | <tspan class="blue">COMPUTE-BOUND (Prefill / Matrix Math)</tspan></text>
+      <text x="18" y="440" class="txt" xml:space="preserve"> 17:24:43 |  53.09 GB/s |  1.81 GB/s |  51.28 GB/s | [<tspan class="yellow">#####---</tspan>]  64.1% |  1498% | 0.77 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+    </g>
+    <g class="f3">
+      <text x="18" y="146" class="txt" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="red">#######################-------</tspan>] <tspan class="cyan"> 64.85 GB/s</tspan> ( 78.3% of 82.8 GB/s Cap)</text>
+      <text x="18" y="164" class="txt" xml:space="preserve">   &#9500;&#9472; Demand Rd: <tspan class="white">  2.15 GB/s</tspan>   &#9500;&#9472; HW Prefetch: <tspan class="white"> 62.70 GB/s</tspan>   &#9500;&#9472; Session Peak/Avg: <tspan class="yellow">64.85</tspan> / <tspan class="green">35.13 GB/s</tspan></text>
+      <text x="18" y="182" class="txt" xml:space="preserve"><tspan class="white"> CPU Quota Util</tspan>: [<tspan class="yellow">###############---------------</tspan>] <tspan class="white">  1560%</tspan>     (IPC: <tspan class="white">0.80</tspan> | Throttled: 0)</text>
+      <text x="18" y="200" class="txt" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">llama-server</tspan>)</text>
+      <text x="18" y="276" class="txt" xml:space="preserve"> 3314524 | llama-server    |   83 |  64.80 GB/s |  2.14 GB/s |  62.66 GB/s | [<tspan class="red">######--</tspan>]  78.3% |  1556% | 0.80 | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="294" class="txt" xml:space="preserve"> 0       | [kernel/ephem]  |   64 |   0.04 GB/s |  0.01 GB/s |   0.03 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     2% | 0.64 | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+      <text x="18" y="312" class="txt" xml:space="preserve"> 3430513 | python3         |   16 |   0.01 GB/s |  0.00 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     2% | 0.91 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="330" class="txt" xml:space="preserve"> 3430603 | node            |   45 |   0.00 GB/s |  0.00 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     0% | 0.00 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="404" class="txt" xml:space="preserve"> 17:24:41 |   0.02 GB/s |  0.01 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |    12% | 0.65 | node          | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="422" class="txt" xml:space="preserve"> 17:24:42 |  22.55 GB/s |  1.78 GB/s |  20.77 GB/s | [<tspan class="green">##------</tspan>]  27.2% |  2840% | 1.18 | llama-server  | <tspan class="blue">COMPUTE-BOUND (Prefill / Matrix Math)</tspan></text>
+      <text x="18" y="440" class="txt" xml:space="preserve"> 17:24:43 |  53.09 GB/s |  1.81 GB/s |  51.28 GB/s | [<tspan class="yellow">#####---</tspan>]  64.1% |  1498% | 0.77 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="458" class="txt" xml:space="preserve"> 17:24:44 |  64.85 GB/s |  2.15 GB/s |  62.70 GB/s | [<tspan class="red">######--</tspan>]  78.3% |  1560% | 0.80 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+    </g>
+    <g class="f4">
+      <text x="18" y="146" class="txt" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="red">##########################----</tspan>] <tspan class="cyan"> 71.92 GB/s</tspan> ( 86.9% of 82.8 GB/s Cap)</text>
+      <text x="18" y="164" class="txt" xml:space="preserve">   &#9500;&#9472; Demand Rd: <tspan class="white">  2.48 GB/s</tspan>   &#9500;&#9472; HW Prefetch: <tspan class="white"> 69.44 GB/s</tspan>   &#9500;&#9472; Session Peak/Avg: <tspan class="yellow">71.92</tspan> / <tspan class="green">42.49 GB/s</tspan></text>
+      <text x="18" y="182" class="txt" xml:space="preserve"><tspan class="white"> CPU Quota Util</tspan>: [<tspan class="yellow">###############---------------</tspan>] <tspan class="white">  1592%</tspan>     (IPC: <tspan class="white">0.83</tspan> | Throttled: 0)</text>
+      <text x="18" y="200" class="txt" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">llama-server</tspan>)</text>
+      <text x="18" y="276" class="txt" xml:space="preserve"> 3314524 | llama-server    |   83 |  71.86 GB/s |  2.46 GB/s |  69.40 GB/s | [<tspan class="red">#######-</tspan>]  86.8% |  1588% | 0.83 | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="294" class="txt" xml:space="preserve"> 0       | [kernel/ephem]  |   64 |   0.04 GB/s |  0.01 GB/s |   0.03 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     2% | 0.66 | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+      <text x="18" y="312" class="txt" xml:space="preserve"> 3430513 | python3         |   16 |   0.02 GB/s |  0.01 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     2% | 0.95 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="330" class="txt" xml:space="preserve"> 3430603 | node            |   45 |   0.00 GB/s |  0.00 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     0% | 0.00 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="404" class="txt" xml:space="preserve"> 17:24:41 |   0.02 GB/s |  0.01 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |    12% | 0.65 | node          | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="422" class="txt" xml:space="preserve"> 17:24:42 |  22.55 GB/s |  1.78 GB/s |  20.77 GB/s | [<tspan class="green">##------</tspan>]  27.2% |  2840% | 1.18 | llama-server  | <tspan class="blue">COMPUTE-BOUND (Prefill / Matrix Math)</tspan></text>
+      <text x="18" y="440" class="txt" xml:space="preserve"> 17:24:43 |  53.09 GB/s |  1.81 GB/s |  51.28 GB/s | [<tspan class="yellow">#####---</tspan>]  64.1% |  1498% | 0.77 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="458" class="txt" xml:space="preserve"> 17:24:44 |  64.85 GB/s |  2.15 GB/s |  62.70 GB/s | [<tspan class="red">######--</tspan>]  78.3% |  1560% | 0.80 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="476" class="txt" xml:space="preserve"> 17:24:45 |  71.92 GB/s |  2.48 GB/s |  69.44 GB/s | [<tspan class="red">#######-</tspan>]  86.9% |  1592% | 0.83 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+    </g>
+    <g class="f5">
+      <text x="18" y="146" class="txt" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="yellow">###########-------------------</tspan>] <tspan class="cyan"> 29.40 GB/s</tspan> ( 35.5% of 82.8 GB/s Cap)</text>
+      <text x="18" y="164" class="txt" xml:space="preserve">   &#9500;&#9472; Demand Rd: <tspan class="white">  1.12 GB/s</tspan>   &#9500;&#9472; HW Prefetch: <tspan class="white"> 28.28 GB/s</tspan>   &#9500;&#9472; Session Peak/Avg: <tspan class="yellow">71.92</tspan> / <tspan class="green">40.30 GB/s</tspan></text>
+      <text x="18" y="182" class="txt" xml:space="preserve"><tspan class="white"> CPU Quota Util</tspan>: [<tspan class="red">##############################</tspan>] <tspan class="white">  3188%</tspan>     (IPC: <tspan class="white">0.24</tspan> | Throttled: 24)</text>
+      <text x="18" y="200" class="txt" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="red">LOCK-CONTENTION / THROTTLED</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">llama-server</tspan>)</text>
+      <text x="18" y="276" class="txt" xml:space="preserve"> 3314524 | llama-server    |   83 |  29.32 GB/s |  1.10 GB/s |  28.22 GB/s | [<tspan class="yellow">###-----</tspan>]  35.4% |  3160% | 0.24 | <tspan class="red">LOCK-CONTENTION / THROTTLED</tspan></text>
+      <text x="18" y="294" class="txt" xml:space="preserve"> 0       | [kernel/ephem]  |   64 |   0.06 GB/s |  0.02 GB/s |   0.04 GB/s | [<tspan class="green">--------</tspan>]   0.1% |    25% | 0.41 | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+      <text x="18" y="312" class="txt" xml:space="preserve"> 3430513 | python3         |   16 |   0.02 GB/s |  0.00 GB/s |   0.02 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     3% | 0.82 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="330" class="txt" xml:space="preserve"> 3430603 | node            |   45 |   0.00 GB/s |  0.00 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     0% | 0.00 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="404" class="txt" xml:space="preserve"> 17:24:42 |  22.55 GB/s |  1.78 GB/s |  20.77 GB/s | [<tspan class="green">##------</tspan>]  27.2% |  2840% | 1.18 | llama-server  | <tspan class="blue">COMPUTE-BOUND (Prefill / Matrix Math)</tspan></text>
+      <text x="18" y="422" class="txt" xml:space="preserve"> 17:24:43 |  53.09 GB/s |  1.81 GB/s |  51.28 GB/s | [<tspan class="yellow">#####---</tspan>]  64.1% |  1498% | 0.77 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="440" class="txt" xml:space="preserve"> 17:24:44 |  64.85 GB/s |  2.15 GB/s |  62.70 GB/s | [<tspan class="red">######--</tspan>]  78.3% |  1560% | 0.80 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="458" class="txt" xml:space="preserve"> 17:24:45 |  71.92 GB/s |  2.48 GB/s |  69.44 GB/s | [<tspan class="red">#######-</tspan>]  86.9% |  1592% | 0.83 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="476" class="txt" xml:space="preserve"> 17:24:46 |  29.40 GB/s |  1.12 GB/s |  28.28 GB/s | [<tspan class="yellow">###-----</tspan>]  35.5% |  3188% | 0.24 | llama-server  | <tspan class="red">LOCK-CONTENTION / THROTTLED</tspan></text>
+    </g>
+    <g class="f6">
+      <text x="18" y="146" class="txt" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="red">#####################---------</tspan>] <tspan class="cyan"> 58.64 GB/s</tspan> ( 70.8% of 82.8 GB/s Cap)</text>
+      <text x="18" y="164" class="txt" xml:space="preserve">   &#9500;&#9472; Demand Rd: <tspan class="white">  1.96 GB/s</tspan>   &#9500;&#9472; HW Prefetch: <tspan class="white"> 56.68 GB/s</tspan>   &#9500;&#9472; Session Peak/Avg: <tspan class="yellow">71.92</tspan> / <tspan class="green">42.92 GB/s</tspan></text>
+      <text x="18" y="182" class="txt" xml:space="preserve"><tspan class="white"> CPU Quota Util</tspan>: [<tspan class="yellow">##############----------------</tspan>] <tspan class="white">  1524%</tspan>     (IPC: <tspan class="white">0.79</tspan> | Throttled: 0)</text>
+      <text x="18" y="200" class="txt" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">llama-server</tspan>)</text>
+      <text x="18" y="276" class="txt" xml:space="preserve"> 3314524 | llama-server    |   83 |  58.60 GB/s |  1.95 GB/s |  56.65 GB/s | [<tspan class="red">######--</tspan>]  70.8% |  1520% | 0.79 | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="294" class="txt" xml:space="preserve"> 0       | [kernel/ephem]  |   64 |   0.03 GB/s |  0.01 GB/s |   0.02 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     2% | 0.61 | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+      <text x="18" y="312" class="txt" xml:space="preserve"> 3430603 | node            |   45 |   0.01 GB/s |  0.00 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     2% | 0.75 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="330" class="txt" xml:space="preserve"> 3430513 | python3         |   16 |   0.00 GB/s |  0.00 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     0% | 0.00 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="404" class="txt" xml:space="preserve"> 17:24:43 |  53.09 GB/s |  1.81 GB/s |  51.28 GB/s | [<tspan class="yellow">#####---</tspan>]  64.1% |  1498% | 0.77 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="422" class="txt" xml:space="preserve"> 17:24:44 |  64.85 GB/s |  2.15 GB/s |  62.70 GB/s | [<tspan class="red">######--</tspan>]  78.3% |  1560% | 0.80 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="440" class="txt" xml:space="preserve"> 17:24:45 |  71.92 GB/s |  2.48 GB/s |  69.44 GB/s | [<tspan class="red">#######-</tspan>]  86.9% |  1592% | 0.83 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="458" class="txt" xml:space="preserve"> 17:24:46 |  29.40 GB/s |  1.12 GB/s |  28.28 GB/s | [<tspan class="yellow">###-----</tspan>]  35.5% |  3188% | 0.24 | llama-server  | <tspan class="red">LOCK-CONTENTION / THROTTLED</tspan></text>
+      <text x="18" y="476" class="txt" xml:space="preserve"> 17:24:47 |  58.64 GB/s |  1.96 GB/s |  56.68 GB/s | [<tspan class="red">######--</tspan>]  70.8% |  1524% | 0.79 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+    </g>
+    <g class="f7">
+      <text x="18" y="146" class="txt" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="green">------------------------------</tspan>] <tspan class="cyan">  0.04 GB/s</tspan> (  0.0% of 82.8 GB/s Cap)</text>
+      <text x="18" y="164" class="txt" xml:space="preserve">   &#9500;&#9472; Demand Rd: <tspan class="white">  0.01 GB/s</tspan>   &#9500;&#9472; HW Prefetch: <tspan class="white">  0.03 GB/s</tspan>   &#9500;&#9472; Session Peak/Avg: <tspan class="yellow">71.92</tspan> / <tspan class="green">37.56 GB/s</tspan></text>
+      <text x="18" y="182" class="txt" xml:space="preserve"><tspan class="white"> CPU Quota Util</tspan>: [<tspan class="green">------------------------------</tspan>] <tspan class="white">     8%</tspan>     (IPC: <tspan class="white">0.72</tspan> | Throttled: 0)</text>
+      <text x="18" y="200" class="txt" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="gray">IDLE</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">idle</tspan>)</text>
+      <text x="18" y="276" class="txt" xml:space="preserve"> 3430603 | node            |   45 |   0.03 GB/s |  0.01 GB/s |   0.02 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     6% | 0.74 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="294" class="txt" xml:space="preserve"> 3314524 | llama-server    |   83 |   0.01 GB/s |  0.00 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     2% | 0.68 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="312" class="txt" xml:space="preserve"> 0       | [kernel/ephem]  |   64 |   0.00 GB/s |  0.00 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     0% | 0.45 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="330" class="txt" xml:space="preserve"> 3430513 | python3         |   16 |   0.00 GB/s |  0.00 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     0% | 0.00 | <tspan class="gray">IDLE</tspan></text>
+      <text x="18" y="404" class="txt" xml:space="preserve"> 17:24:44 |  64.85 GB/s |  2.15 GB/s |  62.70 GB/s | [<tspan class="red">######--</tspan>]  78.3% |  1560% | 0.80 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="422" class="txt" xml:space="preserve"> 17:24:45 |  71.92 GB/s |  2.48 GB/s |  69.44 GB/s | [<tspan class="red">#######-</tspan>]  86.9% |  1592% | 0.83 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="440" class="txt" xml:space="preserve"> 17:24:46 |  29.40 GB/s |  1.12 GB/s |  28.28 GB/s | [<tspan class="yellow">###-----</tspan>]  35.5% |  3188% | 0.24 | llama-server  | <tspan class="red">LOCK-CONTENTION / THROTTLED</tspan></text>
+      <text x="18" y="458" class="txt" xml:space="preserve"> 17:24:47 |  58.64 GB/s |  1.96 GB/s |  56.68 GB/s | [<tspan class="red">######--</tspan>]  70.8% |  1524% | 0.79 | llama-server  | <tspan class="green">MEMORY-BOUND (Decode / BW Saturated)</tspan></text>
+      <text x="18" y="476" class="txt" xml:space="preserve"> 17:24:48 |   0.04 GB/s |  0.01 GB/s |   0.03 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     8% | 0.72 | idle          | <tspan class="gray">IDLE</tspan></text>
+    </g>
+  </g>
+</svg>
