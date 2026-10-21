@@ -1,19 +1,14 @@
 /*
- * dramtop.c - Real-time DRAM Memory Bandwidth & Bottleneck Monitor for Linux
+ * dramtop - real-time DRAM bandwidth monitor for Linux
  *
- * A zero-dependency, single-file C utility that uses Linux `perf_event_open`
- * hardware PMU counters directly (no external `perf` binary required) to
- * measure real-time system-wide & per-process DRAM memory channel bandwidth
- * (GB/s), L1/L2 hardware prefetcher traffic, IPC, and diagnose Memory-Bound
- * vs Compute-Bound vs Lock-Contention states across any Linux workload.
+ * Reads hardware PMU counters through perf_event_open(2) and reports
+ * system-wide and per-process DRAM read traffic (cache-line fills from
+ * memory, split into demand reads and hardware-prefetch fills), IPC,
+ * DRAM misses per kilo-instruction and cgroup CFS throttling.
  *
- * Build:
- *   gcc -O3 -march=native -pthread dramtop.c -o dramtop -lm
- *   # Or portable static binary (with musl-gcc):
- *   musl-gcc -O3 -static -pthread dramtop.c -o dramtop -lm
+ * Build: cc -O2 -pthread dramtop.c -o dramtop
  *
- * Author: Super Zheng (https://github.com/medns)
- * License: MIT
+ * Copyright (c) 2026 Super Zheng (https://github.com/medns). MIT License.
  */
 
 #define _GNU_SOURCE
@@ -22,1437 +17,1713 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
-#include <inttypes.h>
 #include <linux/perf_event.h>
-#include <math.h>
+#include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <sys/mman.h>
 #include <sys/resource.h>
-#include <sys/select.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
-#if defined(__x86_64__) || defined(_M_X64)
-#include <immintrin.h>
-#elif defined(__aarch64__)
-#include <arm_neon.h>
+#ifndef DRAMTOP_VERSION
+#define DRAMTOP_VERSION "1.1.0"
 #endif
 
-#define DRAMTOP_VERSION "1.0.0"
-#define CACHE_LINE_BYTES 64ULL
-#define MAX_CPUS 512
-#define MAX_PROCS 96
-#define MAX_TIDS_PER_PROC 512
-#define MAX_EVENTS 8
-#define RING_SIZE 32
+#ifndef PERF_FLAG_FD_CLOEXEC
+#define PERF_FLAG_FD_CLOEXEC (1UL << 3)
+#endif
 
-typedef enum {
-    ARCH_UNKNOWN = 0,
-    ARCH_AMD_ZEN,
-    ARCH_INTEL,
-    ARCH_ARM64
-} cpu_arch_t;
+#define MAX_EVENTS        6
+#define RING_SIZE         64
+#define JSON_TOP_PROCS    5
+#define IDLE_DETACH_SEC   30.0
+#define ATTACH_RETRY_SEC  30.0
+#define PF_KTHREAD        0x00200000u
+#define NAME_LEN          48
 
-typedef enum {
-    VIEW_SPLIT = 0,      /* Top Processes Table + Rolling History Timeline */
-    VIEW_PROCS_ONLY = 1, /* Full-screen Top Processes Table */
-    VIEW_HIST_ONLY = 2   /* Full-screen Rolling History Timeline */
-} view_mode_t;
+#define CAL_MAX_BYTES     (512ULL << 20)
+#define CAL_MIN_BYTES     (64ULL << 20)
+#define CAL_MAX_THREADS   256
+#define CAL_PASSES        4
+#define CAL_PASS_SEC      0.08
+#define CAL_MAX_SWEEPS    32
+
+#define RST     "\033[0m"
+#define BOLD    "\033[1m"
+#define CYAN    "\033[1;36m"
+#define WHITE   "\033[1;37m"
+#define YELLOW  "\033[1;33m"
+#define GREEN   "\033[1;32m"
+#define RED     "\033[1;31m"
+#define BLUE    "\033[1;34m"
+#define MAGENTA "\033[1;35m"
+#define GRAY    "\033[90m"
+
+#define RULE "=========================================================================================================="
+#define DASH "----------------------------------------------------------------------------------------------------------"
+
+enum ev_kind { EV_DEMAND, EV_PREFETCH, EV_TOTAL, EV_CYCLES, EV_INSNS, EV_KINDS };
 
 typedef struct {
-    const char *name;
     uint32_t type;
     uint64_t config;
-    uint64_t config1;
-    bool is_demand_dram;
-    bool is_prefetch_dram;
-    bool is_cycles;
-    bool is_instructions;
-} pmu_event_def_t;
+    enum ev_kind kind;
+} event_t;
 
 typedef struct {
-    bool active;
-    bool alive_in_scan;
-    pid_t pid;
-    char comm[64];
-    int num_threads;
-    int opened_tids;
-    int fds[MAX_TIDS_PER_PROC][MAX_EVENTS];
-    uint64_t prev_vals[MAX_EVENTS];
-    uint64_t prev_cpu_ticks;
-    bool initialized;
+    uint64_t val, ena, run;
+} snap_t;
 
-    /* Current sample metrics */
-    double demand_bw_gbs;
-    double prefetch_bw_gbs;
-    double total_bw_gbs;
-    double util_pct;
-    double cpu_pct;
-    double ipc;
-    char status_tag[64];
-    int status_color;
-} tracked_proc_t;
+/* One instance of every selected event, bound to a single thread or CPU. */
+typedef struct {
+    int fd[MAX_EVENTS];
+    snap_t snap[MAX_EVENTS];
+} counter_set_t;
+
+typedef enum {
+    ST_SAMPLING, ST_IDLE, ST_MEM_BW, ST_MEM_LAT, ST_CONTENTION,
+    ST_COMPUTE, ST_ACTIVE, ST_OTHER, ST_NOACCESS
+} state_t;
+
+static const struct {
+    const char *label, *color;
+} STATE[] = {
+    [ST_SAMPLING]   = {"SAMPLING...",                      YELLOW},
+    [ST_IDLE]       = {"IDLE",                             GRAY},
+    [ST_MEM_BW]     = {"MEMORY-BOUND (DRAM BW Saturated)", GREEN},
+    [ST_MEM_LAT]    = {"MEMORY-BOUND (DRAM Latency)",      GREEN},
+    [ST_CONTENTION] = {"LOCK-CONTENTION / CFS-THROTTLED",  RED},
+    [ST_COMPUTE]    = {"COMPUTE-BOUND (Cache-Resident)",   BLUE},
+    [ST_ACTIVE]     = {"ACTIVE (Balanced Workload)",       YELLOW},
+    [ST_OTHER]      = {"KERNEL / EPHEMERAL",               CYAN},
+    [ST_NOACCESS]   = {"NO PMU ACCESS",                    GRAY},
+};
 
 typedef struct {
-    bool available;
-    bool include_kernel;
-    int num_cpus;
-    int opened_cpus;
-    int fds[MAX_CPUS][MAX_EVENTS];
-    uint64_t prev_vals[MAX_EVENTS];
-} sys_cpu_pmu_t;
+    double total_gbs, demand_gbs, prefetch_gbs;
+    double util_pct, cpu_pct, ipc, mpki;
+    bool has_bw;
+    state_t state;
+} metrics_t;
 
 typedef struct {
-    char time_str[16];
-    double timestamp;
-    char top_comm[64];
+    pid_t pid, ppid;
+    unsigned long long start_ticks;   /* process start, clock ticks since boot */
+    unsigned long long ticks, dticks; /* utime + stime, and its increase over the last scan */
+    char comm[16];
+    char name[NAME_LEN];
+    int threads;
+    bool seen, attached, just_attached, rearm, denied;
+    /* Counters opened with inherit=1 also count children forked afterwards;
+     * such children are "covered" by this ancestor until it is re-armed. */
+    pid_t covered_by;
+    unsigned long long attach_ticks;
+    double last_active, last_read, retry_at;
+    counter_set_t *cs;
+    int ncs;
+    uint64_t acc[EV_KINDS];
+    metrics_t m;
+} proc_t;
+
+typedef struct {
+    char time[9];
+    double ts;
+    metrics_t m;
+    char top[NAME_LEN];
     pid_t top_pid;
-    double total_bw_gbs;
-    double demand_bw_gbs;
-    double prefetch_bw_gbs;
-    double util_pct;
-    double cpu_pct;
-    double ipc;
-    long throttled_delta;
-    char status_tag[64];
-    int status_color;
-} sample_metrics_t;
+    bool cfs_ok;
+    long long d_periods, d_throttled;
+} sample_t;
 
-static volatile sig_atomic_t g_stop = 0;
-static volatile sig_atomic_t g_winch = 0;
-static struct termios g_orig_termios;
-static bool g_tui_active = false;
-static tracked_proc_t g_procs[MAX_PROCS];
+typedef struct {
+    int vendor, family, model;
+    unsigned impl, part;
+} cpu_id_t;
 
-static void handle_sigint(int sig) {
-    (void)sig;
-    g_stop = 1;
-}
+enum { V_OTHER, V_AMD, V_INTEL };
+enum { VIEW_SPLIT, VIEW_PROCS, VIEW_TIMELINE, VIEW_COUNT };
+static const char *const VIEW_NAME[VIEW_COUNT] = {"Split", "Top Processes", "Timeline"};
 
-static void handle_sigwinch(int sig) {
-    (void)sig;
-    g_winch = 1;
-}
+static struct {
+    /* options */
+    pid_t filter_pid;
+    const char *filter_name;
+    double interval;
+    long max_count;
+    double ceiling;
+    bool batch, json;
 
-static void raise_fd_limit(void) {
-    struct rlimit rl;
-    if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
-        rl.rlim_cur = (rl.rlim_max > 65536) ? 65536 : rl.rlim_max;
-        setrlimit(RLIMIT_NOFILE, &rl);
-    }
-}
+    /* environment */
+    pid_t self;
+    long clk_tck;
+    char cpu_name[128];
+    int *cpus, ncpus;
+    double eff_cpus;
+    bool has_quota;
+    unsigned line;
 
-static void leave_tui_mode(void) {
-    if (g_tui_active) {
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_orig_termios);
-        printf("\033[?25h\033[0m\033[?1049l");
-        fflush(stdout);
-        g_tui_active = false;
-    }
-}
+    /* PMU */
+    const char *backend;
+    event_t ev[MAX_EVENTS];
+    int nev;
+    bool has_split, has_total, kernel_ok;
+    counter_set_t *sys;
+    int sys_cpus;
+    bool sys_on;
+    char scope[96];
 
-static void enter_tui_mode(void) {
-    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) return;
-    if (tcgetattr(STDIN_FILENO, &g_orig_termios) == -1) return;
-    struct termios raw = g_orig_termios;
-    raw.c_lflag &= ~(ECHO | ICANON);
-    raw.c_cc[VMIN] = 0;
-    raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0) {
-        g_tui_active = true;
-        atexit(leave_tui_mode);
-        printf("\033[?1049h\033[2J\033[H\033[?25l");
-        fflush(stdout);
-    }
-}
+    /* processes */
+    proc_t *procs;
+    int nprocs, cap;
+    proc_t other;
+    proc_t **view;
+    int nview, view_cap;
+    uint64_t pending[EV_KINDS];
+    bool fd_limited;
 
-static int get_term_rows(void) {
-    struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0) {
-        return (int)ws.ws_row;
-    }
-    return 28;
-}
+    /* sampling */
+    double scan_ts;
+    unsigned long long prev_boot;
+    bool cfs_ok;
+    long long cfs_periods, cfs_throttled;
+    double peak, max_bw, sum_bw;
+    long nsamples;
+} g = {.interval = 1.0};
 
-static double now_sec(void) {
+static volatile sig_atomic_t g_stop, g_winch, g_tstp;
+static bool g_tui, g_color;
+static struct termios g_saved_tio;
+
+/* ------------------------------------------------------------------ */
+/* Small helpers                                                       */
+/* ------------------------------------------------------------------ */
+
+static double mono_now(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
 
-static long sys_perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
-                                int cpu, int group_fd, unsigned long flags) {
-    return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
+static unsigned long long boot_ticks(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_BOOTTIME, &ts);
+    return (unsigned long long)ts.tv_sec * (unsigned long long)g.clk_tck +
+           (unsigned long long)ts.tv_nsec * (unsigned long long)g.clk_tck / 1000000000ULL;
 }
 
-static cpu_arch_t detect_cpu_arch(char *model_buf, size_t model_len) {
-    snprintf(model_buf, model_len, "Generic Linux CPU");
-    cpu_arch_t arch = ARCH_UNKNOWN;
-#if defined(__aarch64__)
-    snprintf(model_buf, model_len, "ARM64 Processor");
-    arch = ARCH_ARM64;
-#endif
-    FILE *fp = fopen("/proc/cpuinfo", "r");
-    if (!fp) return arch;
+static void *xrealloc(void *p, size_t n) {
+    void *q = realloc(p, n);
+    if (!q && n) {
+        fputs("dramtop: out of memory\n", stderr);
+        exit(1);
+    }
+    return q;
+}
 
+static ssize_t read_file(const char *path, char *buf, size_t size) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    ssize_t n = read(fd, buf, size - 1);
+    close(fd);
+    if (n < 0) return -1;
+    buf[n] = '\0';
+    return n;
+}
+
+static bool read_ll(const char *path, long long *out) {
+    char buf[64], *end;
+    if (read_file(path, buf, sizeof buf) <= 0) return false;
+    errno = 0;
+    long long v = strtoll(buf, &end, 10);
+    if (end == buf || errno) return false;
+    *out = v;
+    return true;
+}
+
+static char *trim(char *s) {
+    while (isspace((unsigned char)*s)) s++;
+    char *e = s + strlen(s);
+    while (e > s && isspace((unsigned char)e[-1])) *--e = '\0';
+    return s;
+}
+
+static void copy_str(char *dst, size_t n, const char *src) {
+    size_t len = strlen(src);
+    if (len >= n) len = n - 1;
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
+/* Process names are attacker-controlled; keep the terminal and JSON safe. */
+static void sanitize(char *s) {
+    for (; *s; s++)
+        if ((unsigned char)*s < 0x20 || (unsigned char)*s >= 0x7f) *s = '?';
+}
+
+static const char *C(const char *esc) { return g_color ? esc : ""; }
+
+/* ------------------------------------------------------------------ */
+/* System detection                                                    */
+/* ------------------------------------------------------------------ */
+
+static const struct {
+    unsigned impl, part;
+    const char *name;
+} ARM_PARTS[] = {
+    {0x41, 0xd0c, "Arm Neoverse N1"},       {0x41, 0xd40, "Arm Neoverse V1"},
+    {0x41, 0xd49, "Arm Neoverse N2"},       {0x41, 0xd4f, "Arm Neoverse V2"},
+    {0x41, 0xd84, "Arm Neoverse V3"},       {0x41, 0xd8e, "Arm Neoverse N3"},
+    {0x46, 0x001, "Fujitsu A64FX"},         {0x48, 0xd01, "HiSilicon Kunpeng 920"},
+    {0xc0, 0xac3, "Ampere Ampere-1"},       {0xc0, 0xac4, "Ampere Ampere-1A"},
+};
+
+static void detect_cpu(cpu_id_t *id) {
+    memset(id, 0, sizeof *id);
+    snprintf(g.cpu_name, sizeof g.cpu_name, "Unknown CPU");
+    FILE *fp = fopen("/proc/cpuinfo", "re");
+    if (!fp) return;
     char line[512];
-    while (fgets(line, sizeof(line), fp)) {
-        if (strncmp(line, "vendor_id", 9) == 0) {
-            if (strstr(line, "AuthenticAMD")) arch = ARCH_AMD_ZEN;
-            else if (strstr(line, "GenuineIntel")) arch = ARCH_INTEL;
-        } else if (strncmp(line, "model name", 10) == 0 || strncmp(line, "Processor", 9) == 0) {
-            char *colon = strchr(line, ':');
-            if (colon) {
-                colon++;
-                while (*colon == ' ' || *colon == '\t') colon++;
-                char *nl = strchr(colon, '\n');
-                if (nl) *nl = '\0';
-                if (colon[0]) snprintf(model_buf, model_len, "%s", colon);
-            }
+    bool any = false;
+    while (fgets(line, sizeof line, fp)) {
+        char *colon = strchr(line, ':');
+        if (!colon) {
+            if (any) break; /* only the first processor block is needed */
+            continue;
+        }
+        *colon = '\0';
+        char *key = trim(line), *val = trim(colon + 1);
+        any = true;
+        if (!strcmp(key, "vendor_id")) {
+            if (!strcmp(val, "AuthenticAMD") || !strcmp(val, "HygonGenuine")) id->vendor = V_AMD;
+            else if (!strcmp(val, "GenuineIntel")) id->vendor = V_INTEL;
+        } else if (!strcmp(key, "cpu family")) {
+            id->family = atoi(val);
+        } else if (!strcmp(key, "model")) {
+            id->model = atoi(val);
+        } else if (!strcmp(key, "model name") && *val) {
+            copy_str(g.cpu_name, sizeof g.cpu_name, val);
+        } else if (!strcmp(key, "CPU implementer")) {
+            id->impl = (unsigned)strtoul(val, NULL, 0);
+        } else if (!strcmp(key, "CPU part")) {
+            id->part = (unsigned)strtoul(val, NULL, 0);
         }
     }
     fclose(fp);
-    return arch;
+    if (id->impl) {
+        snprintf(g.cpu_name, sizeof g.cpu_name, "Arm CPU (implementer 0x%02x, part 0x%03x)", id->impl, id->part);
+        for (size_t i = 0; i < sizeof ARM_PARTS / sizeof ARM_PARTS[0]; i++)
+            if (ARM_PARTS[i].impl == id->impl && ARM_PARTS[i].part == id->part)
+                snprintf(g.cpu_name, sizeof g.cpu_name, "%s", ARM_PARTS[i].name);
+    }
+    sanitize(g.cpu_name);
 }
 
-static long read_cgroup_throttled(void) {
-    const char *paths[] = {
-        "/sys/fs/cgroup/cpu/cpu.stat",
-        "/sys/fs/cgroup/cpu.stat",
-        NULL
-    };
-    for (int i = 0; paths[i]; i++) {
-        FILE *fp = fopen(paths[i], "r");
-        if (!fp) continue;
-        char line[128];
-        long val = -1;
-        while (fgets(line, sizeof(line), fp)) {
-            if (sscanf(line, "nr_throttled %ld", &val) == 1) {
-                fclose(fp);
-                return val;
+static void add_cpu(int **ids, int *n, int *cap, int cpu) {
+    if (*n == *cap) {
+        *cap = *cap ? *cap * 2 : 64;
+        *ids = xrealloc(*ids, (size_t)*cap * sizeof **ids);
+    }
+    (*ids)[(*n)++] = cpu;
+}
+
+/* CPU ids can be sparse ("0-31,64-95"), so parse the online list. */
+static void detect_cpus(void) {
+    char buf[4096];
+    int *ids = NULL, n = 0, cap = 0;
+    if (read_file("/sys/devices/system/cpu/online", buf, sizeof buf) > 0) {
+        char *p = buf, *end;
+        for (;;) {
+            long a = strtol(p, &end, 10), b;
+            if (end == p) break;
+            b = a;
+            if (*end == '-') {
+                p = end + 1;
+                b = strtol(p, &end, 10);
             }
+            for (long c = a; c <= b && c < 65536; c++) add_cpu(&ids, &n, &cap, (int)c);
+            if (*end != ',') break;
+            p = end + 1;
         }
-        fclose(fp);
     }
-    return -1;
+    if (n == 0) {
+        long c = sysconf(_SC_NPROCESSORS_ONLN);
+        for (long i = 0; i < (c > 0 ? c : 1); i++) add_cpu(&ids, &n, &cap, (int)i);
+    }
+    g.cpus = ids;
+    g.ncpus = n;
 }
 
-static double detect_effective_cpus(int *logical_cpus_out) {
-    int logical = (int)sysconf(_SC_NPROCESSORS_ONLN);
-    if (logical < 1) logical = 1;
-    if (logical_cpus_out) *logical_cpus_out = logical;
-
-    FILE *fq = fopen("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r");
-    FILE *fp = fopen("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r");
-    if (fq && fp) {
-        long quota = -1, period = 100000;
-        if (fscanf(fq, "%ld", &quota) == 1 && fscanf(fp, "%ld", &period) == 1) {
-            if (quota > 0 && period > 0) {
-                fclose(fq);
-                fclose(fp);
-                return (double)quota / (double)period;
-            }
-        }
+static double cgroup_cpu_quota(void) {
+    char buf[128];
+    long long q, p;
+    if (read_file("/sys/fs/cgroup/cpu.max", buf, sizeof buf) > 0)
+        return sscanf(buf, "%lld %lld", &q, &p) == 2 && q > 0 && p > 0 ? (double)q / (double)p : 0.0;
+    static const char *const dirs[] = {"/sys/fs/cgroup/cpu", "/sys/fs/cgroup/cpu,cpuacct"};
+    for (size_t i = 0; i < sizeof dirs / sizeof dirs[0]; i++) {
+        char qp[96], pp[96];
+        snprintf(qp, sizeof qp, "%s/cpu.cfs_quota_us", dirs[i]);
+        snprintf(pp, sizeof pp, "%s/cpu.cfs_period_us", dirs[i]);
+        if (read_ll(qp, &q) && read_ll(pp, &p) && q > 0 && p > 0) return (double)q / (double)p;
     }
-    if (fq) fclose(fq);
-    if (fp) fclose(fp);
-
-    FILE *fmax = fopen("/sys/fs/cgroup/cpu.max", "r");
-    if (fmax) {
-        long quota = -1, period = 100000;
-        if (fscanf(fmax, "%ld %ld", &quota, &period) == 2 && quota > 0 && period > 0) {
-            fclose(fmax);
-            return (double)quota / (double)period;
-        }
-        fclose(fmax);
-    }
-    return (double)logical;
+    return 0.0;
 }
 
-/* Probe whether a specific PMU event config is supported by the running CPU/kernel */
-static bool probe_pmu_event(uint32_t type, uint64_t config) {
-    struct perf_event_attr pe;
-    memset(&pe, 0, sizeof(pe));
-    pe.type = type;
-    pe.size = sizeof(pe);
-    pe.config = config;
-    pe.disabled = 1;
-    pe.exclude_kernel = 1;
-    pe.exclude_hv = 1;
-    long fd = sys_perf_event_open(&pe, 0, -1, -1, 0);
-    if (fd >= 0) {
-        close((int)fd);
-        return true;
+static void detect_cpu_budget(void) {
+    double avail = g.ncpus;
+    cpu_set_t *set = CPU_ALLOC(8192);
+    size_t sz = CPU_ALLOC_SIZE(8192);
+    if (set && sched_getaffinity(0, sz, set) == 0 && CPU_COUNT_S(sz, set) > 0) avail = CPU_COUNT_S(sz, set);
+    if (set) CPU_FREE(set);
+    double quota = cgroup_cpu_quota();
+    g.eff_cpus = avail;
+    g.has_quota = quota > 0 && quota < avail;
+    if (g.has_quota) g.eff_cpus = quota;
+}
+
+static unsigned detect_line_size(void) {
+    char path[128];
+    long long v;
+    for (int i = 7; i >= 0; i--) {
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cache/index%d/coherency_line_size", g.cpus[0], i);
+        if (read_ll(path, &v) && v >= 32 && v <= 1024) return (unsigned)v;
+    }
+    return 64;
+}
+
+static bool read_cfs(long long *periods, long long *throttled) {
+    static const char *const paths[] = {"/sys/fs/cgroup/cpu.stat", "/sys/fs/cgroup/cpu/cpu.stat",
+                                        "/sys/fs/cgroup/cpu,cpuacct/cpu.stat"};
+    char buf[1024], *s;
+    for (size_t i = 0; i < sizeof paths / sizeof paths[0]; i++) {
+        if (read_file(paths[i], buf, sizeof buf) <= 0) continue;
+        bool hp = (s = strstr(buf, "nr_periods ")) && sscanf(s + 11, "%lld", periods) == 1;
+        bool ht = (s = strstr(buf, "nr_throttled ")) && sscanf(s + 13, "%lld", throttled) == 1;
+        if (hp && ht) return true;
     }
     return false;
 }
 
-static int build_pmu_events(cpu_arch_t arch, pmu_event_def_t *events, const char **backend_desc) {
-    int n = 0;
-    if (arch == ARCH_AMD_ZEN && probe_pmu_event(PERF_TYPE_RAW, 0x0843ULL)) {
-        *backend_desc = "AMD Zen Core PMU (L1/L2 Demand + HW Prefetch DRAM Fills)";
-        events[n++] = (pmu_event_def_t){"lcl_dram_demand", PERF_TYPE_RAW, 0x0843ULL, 0, true, false, false, false};
-        events[n++] = (pmu_event_def_t){"rmt_dram_demand", PERF_TYPE_RAW, 0x4043ULL, 0, true, false, false, false};
-        events[n++] = (pmu_event_def_t){"lcl_dram_l1pf",   PERF_TYPE_RAW, 0x085aULL, 0, false, true, false, false};
-        events[n++] = (pmu_event_def_t){"rmt_dram_l1pf",   PERF_TYPE_RAW, 0x405aULL, 0, false, true, false, false};
-        events[n++] = (pmu_event_def_t){"dram_l2pf",       PERF_TYPE_RAW, 0xff72ULL, 0, false, true, false, false};
-    } else if (arch == ARCH_INTEL && probe_pmu_event(PERF_TYPE_RAW, 0x20d1ULL)) {
-        /*
-         * Intel Core PMU:
-         * - MEM_LOAD_RETIRED.L3_MISS (0x20d1): Demand data loads that missed L3 (served from DRAM)
-         * - PERF_COUNT_HW_CACHE_MISSES (0x412e): Total LLC misses (Demand + L2 HW Prefetch).
-         *   Only add L2_RQSTS.PF_MISS (0x3824) if supported; otherwise use CACHE_MISSES as total.
-         */
-        if (probe_pmu_event(PERF_TYPE_RAW, 0x3824ULL)) {
-            *backend_desc = "Intel Core PMU (MEM_LOAD_RETIRED.L3_MISS + L2_RQSTS.PF_MISS)";
-            events[n++] = (pmu_event_def_t){"l3_miss_demand", PERF_TYPE_RAW, 0x20d1ULL, 0, true, false, false, false};
-            events[n++] = (pmu_event_def_t){"l2_pf_miss",     PERF_TYPE_RAW, 0x3824ULL, 0, false, true, false, false};
-        } else {
-            *backend_desc = "Intel Core PMU (Hardware LLC Misses to DRAM * 64B)";
-            events[n++] = (pmu_event_def_t){"llc_misses", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES, 0, true, false, false, false};
-        }
-    } else if (arch == ARCH_ARM64 && probe_pmu_event(PERF_TYPE_RAW, 0x0017ULL)) {
-        /* ARMv8/v9 PMUv3: L2D_CACHE_REFILL (0x0017) or LL_CACHE_MISS_RD (0x0037) */
-        if (probe_pmu_event(PERF_TYPE_RAW, 0x0037ULL)) {
-            *backend_desc = "ARM64 PMUv3 (LL_CACHE_MISS_RD * 64B)";
-            events[n++] = (pmu_event_def_t){"ll_cache_miss", PERF_TYPE_RAW, 0x0037ULL, 0, true, false, false, false};
-        } else {
-            *backend_desc = "ARM64 PMUv3 (L2D_CACHE_REFILL * 64B)";
-            events[n++] = (pmu_event_def_t){"l2d_refill", PERF_TYPE_RAW, 0x0017ULL, 0, true, false, false, false};
-        }
-    } else {
-        *backend_desc = "Generic Linux PMU (Hardware LLC Cache Misses * 64B)";
-        events[n++] = (pmu_event_def_t){"cache_misses", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES, 0, true, false, false, false};
+static unsigned long long mem_available(void) {
+    unsigned long long avail = ~0ULL;
+    char buf[8192], *s;
+    long long lim, use;
+    if (read_file("/proc/meminfo", buf, sizeof buf) > 0 && (s = strstr(buf, "MemAvailable:")))
+        avail = strtoull(s + 13, NULL, 10) * 1024ULL;
+    if ((read_ll("/sys/fs/cgroup/memory.max", &lim) && read_ll("/sys/fs/cgroup/memory.current", &use)) ||
+        (read_ll("/sys/fs/cgroup/memory/memory.limit_in_bytes", &lim) &&
+         read_ll("/sys/fs/cgroup/memory/memory.usage_in_bytes", &use))) {
+        unsigned long long room = lim > use ? (unsigned long long)(lim - use) : 0;
+        if (room < avail) avail = room;
     }
-
-    events[n++] = (pmu_event_def_t){"cycles",       PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES,   0, false, false, true, false};
-    events[n++] = (pmu_event_def_t){"instructions", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, 0, false, false, false, true};
-    return n;
+    return avail;
 }
 
-static bool is_user_process(pid_t pid) {
-    char path[64];
-    snprintf(path, sizeof(path), "/proc/%d/cmdline", (int)pid);
-    FILE *fp = fopen(path, "r");
-    if (!fp) return false;
-    char ch = 0;
-    size_t n = fread(&ch, 1, 1, fp);
-    fclose(fp);
-    return n > 0; /* Kernel threads have empty /proc/<pid>/cmdline */
-}
-
-static bool read_proc_stat(pid_t pid, uint64_t *cpu_ticks_out, int *num_threads_out, char *comm_out, size_t comm_len) {
-    char path[64];
-    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
-    FILE *fp = fopen(path, "r");
-    if (!fp) return false;
-
-    char buf[1024];
-    if (!fgets(buf, sizeof(buf), fp)) {
-        fclose(fp);
-        return false;
-    }
-    fclose(fp);
-
-    char *lpar = strchr(buf, '(');
-    char *rpar = strrchr(buf, ')');
-    if (!lpar || !rpar || rpar < lpar) return false;
-
-    if (comm_out && comm_len > 0) {
-        size_t len = (size_t)(rpar - lpar - 1);
-        if (len >= comm_len) len = comm_len - 1;
-        memcpy(comm_out, lpar + 1, len);
-        comm_out[len] = '\0';
-
-        /* If thread renamed itself to generic "MainThread", resolve real binary from /proc/<pid>/cmdline */
-        if (strcmp(comm_out, "MainThread") == 0) {
-            char cmdpath[64];
-            snprintf(cmdpath, sizeof(cmdpath), "/proc/%d/cmdline", (int)pid);
-            FILE *cfp = fopen(cmdpath, "r");
-            if (cfp) {
-                char cmdbuf[256] = {0};
-                size_t cn = fread(cmdbuf, 1, sizeof(cmdbuf) - 1, cfp);
-                fclose(cfp);
-                if (cn > 0) {
-                    cmdbuf[cn] = '\0';
-                    char *slash = strrchr(cmdbuf, '/');
-                    const char *base = slash ? (slash + 1) : cmdbuf;
-                    if (base[0]) snprintf(comm_out, comm_len, "%s", base);
-                }
-            }
-        }
-    }
-
-    unsigned long utime = 0, stime = 0;
-    long num_threads = 1;
-    int n = sscanf(rpar + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu %*d %*d %*d %*d %ld",
-                   &utime, &stime, &num_threads);
-    if (n >= 2 && cpu_ticks_out) {
-        *cpu_ticks_out = (uint64_t)utime + (uint64_t)stime;
-    }
-    if (n >= 3 && num_threads_out) {
-        *num_threads_out = (int)num_threads;
-    }
-    return true;
-}
-
-static void close_tracked_proc(tracked_proc_t *p, int num_events) {
-    if (!p->active) return;
-    for (int t = 0; t < p->opened_tids; t++) {
-        for (int e = 0; e < num_events; e++) {
-            if (p->fds[t][e] >= 0) {
-                close(p->fds[t][e]);
-                p->fds[t][e] = -1;
-            }
-        }
-    }
-    p->opened_tids = 0;
-    p->active = false;
-    p->initialized = false;
-}
-
-static bool open_pmu_for_proc(tracked_proc_t *p, const pmu_event_def_t *events, int num_events) {
-    char task_path[64];
-    snprintf(task_path, sizeof(task_path), "/proc/%d/task", (int)p->pid);
-    DIR *dir = opendir(task_path);
-    if (!dir) return false;
-
-    p->opened_tids = 0;
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL && p->opened_tids < MAX_TIDS_PER_PROC) {
-        if (!isdigit((unsigned char)ent->d_name[0])) continue;
-        pid_t tid = (pid_t)atoi(ent->d_name);
-        if (tid <= 0) continue;
-
-        int t_idx = p->opened_tids;
-        bool any_opened = false;
-        for (int e = 0; e < num_events; e++) {
-            p->fds[t_idx][e] = -1;
-            struct perf_event_attr pe;
-            memset(&pe, 0, sizeof(pe));
-            pe.type = events[e].type;
-            pe.size = sizeof(pe);
-            pe.config = events[e].config;
-            pe.config1 = events[e].config1;
-            pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
-            pe.disabled = 0;
-            pe.inherit = 1;
-            pe.exclude_kernel = 0;
-            pe.exclude_hv = 0;
-
-            long fd = sys_perf_event_open(&pe, tid, -1, -1, 0);
-            if (fd < 0 && (errno == EACCES || errno == EPERM)) {
-                pe.exclude_kernel = 1;
-                pe.exclude_hv = 1;
-                fd = sys_perf_event_open(&pe, tid, -1, -1, 0);
-            }
-            p->fds[t_idx][e] = (int)fd;
-            if (fd >= 0) any_opened = true;
-        }
-        if (any_opened) {
-            p->opened_tids++;
-        }
-    }
-    closedir(dir);
-    return p->opened_tids > 0;
-}
-
-static void read_proc_pmu_totals(tracked_proc_t *p, int num_events, uint64_t *totals_out) {
-    for (int e = 0; e < num_events; e++) totals_out[e] = 0;
-    for (int t = 0; t < p->opened_tids; t++) {
-        for (int e = 0; e < num_events; e++) {
-            int fd = p->fds[t][e];
-            if (fd >= 0) {
-                uint64_t buf[3] = {0, 0, 0};
-                if (read(fd, buf, sizeof(buf)) == sizeof(buf)) {
-                    uint64_t scaled = buf[0];
-                    if (buf[2] > 0 && buf[1] > buf[2]) {
-                        scaled = (uint64_t)((double)buf[0] * ((double)buf[1] / (double)buf[2]));
-                    }
-                    totals_out[e] += scaled;
-                }
-            }
-        }
+static void raise_fd_limit(void) {
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur < rl.rlim_max) {
+        rl.rlim_cur = rl.rlim_max;
+        setrlimit(RLIMIT_NOFILE, &rl);
     }
 }
 
-/*
- * Tier-1 System-Wide Per-CPU Hardware PMU Engine (pid = -1, cpu = 0..N-1)
- * Automatically used on bare-metal hosts or privileged containers where
- * perf_event_paranoid <= 0 or CAP_PERFMON / CAP_SYS_ADMIN is available.
- * Captures 100% of system DRAM traffic including kernel threads, page-cache,
- * and short-lived ephemeral processes.
- */
-static void close_sys_cpu_pmu(sys_cpu_pmu_t *s, int num_events) {
-    if (!s->available) return;
-    for (int c = 0; c < s->num_cpus; c++) {
-        for (int e = 0; e < num_events; e++) {
-            if (s->fds[c][e] >= 0) {
-                close(s->fds[c][e]);
-                s->fds[c][e] = -1;
-            }
-        }
-    }
-    s->available = false;
-    s->opened_cpus = 0;
+/* ------------------------------------------------------------------ */
+/* PMU counters                                                        */
+/* ------------------------------------------------------------------ */
+
+static int perf_open(const event_t *e, pid_t pid, int cpu, bool inherit) {
+    struct perf_event_attr a;
+    memset(&a, 0, sizeof a);
+    a.size = sizeof a;
+    a.type = e->type;
+    a.config = e->config;
+    a.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
+    a.inherit = inherit;
+    a.exclude_kernel = !g.kernel_ok;
+    a.exclude_hv = !g.kernel_ok;
+    return (int)syscall(__NR_perf_event_open, &a, pid, cpu, -1, PERF_FLAG_FD_CLOEXEC);
 }
 
-static bool open_sys_cpu_pmu(sys_cpu_pmu_t *s, int num_cpus, const pmu_event_def_t *events, int num_events) {
-    memset(s, 0, sizeof(*s));
-    if (num_cpus > MAX_CPUS) num_cpus = MAX_CPUS;
-    s->num_cpus = num_cpus;
-    for (int c = 0; c < MAX_CPUS; c++) {
-        for (int e = 0; e < MAX_EVENTS; e++) s->fds[c][e] = -1;
-    }
-
-    int excl_kernel = 0;
-    struct perf_event_attr probe_pe;
-    memset(&probe_pe, 0, sizeof(probe_pe));
-    probe_pe.type = events[0].type;
-    probe_pe.size = sizeof(probe_pe);
-    probe_pe.config = events[0].config;
-    probe_pe.config1 = events[0].config1;
-    probe_pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
-    probe_pe.exclude_kernel = 0;
-    probe_pe.exclude_hv = 0;
-
-    long probe_fd = sys_perf_event_open(&probe_pe, -1, 0, -1, 0);
-    if (probe_fd < 0) {
-        probe_pe.exclude_kernel = 1;
-        probe_pe.exclude_hv = 1;
-        probe_fd = sys_perf_event_open(&probe_pe, -1, 0, -1, 0);
-        if (probe_fd < 0) {
-            return false; /* Blocked by perf_event_paranoid in unprivileged container */
-        }
-        excl_kernel = 1;
-    }
-    close((int)probe_fd);
-
-    s->include_kernel = (excl_kernel == 0);
-    s->opened_cpus = 0;
-
-    for (int c = 0; c < num_cpus; c++) {
-        bool cpu_ok = false;
-        for (int e = 0; e < num_events; e++) {
-            struct perf_event_attr pe;
-            memset(&pe, 0, sizeof(pe));
-            pe.type = events[e].type;
-            pe.size = sizeof(pe);
-            pe.config = events[e].config;
-            pe.config1 = events[e].config1;
-            pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
-            pe.disabled = 0;
-            pe.exclude_kernel = excl_kernel;
-            pe.exclude_hv = excl_kernel;
-
-            long fd = sys_perf_event_open(&pe, -1, c, -1, 0);
-            s->fds[c][e] = (int)fd;
-            if (fd >= 0) cpu_ok = true;
-        }
-        if (cpu_ok) s->opened_cpus++;
-    }
-
-    if (s->opened_cpus == 0) {
-        return false;
-    }
-    s->available = true;
-    return true;
+static void cs_init(counter_set_t *cs) {
+    memset(cs, 0, sizeof *cs);
+    for (int i = 0; i < MAX_EVENTS; i++) cs->fd[i] = -1;
 }
 
-static void read_sys_cpu_pmu_totals(sys_cpu_pmu_t *s, int num_events, uint64_t *totals_out) {
-    for (int e = 0; e < num_events; e++) totals_out[e] = 0;
-    if (!s->available) return;
-    for (int c = 0; c < s->num_cpus; c++) {
-        for (int e = 0; e < num_events; e++) {
-            int fd = s->fds[c][e];
-            if (fd >= 0) {
-                uint64_t buf[3] = {0, 0, 0};
-                if (read(fd, buf, sizeof(buf)) == sizeof(buf)) {
-                    uint64_t scaled = buf[0];
-                    if (buf[2] > 0 && buf[1] > buf[2]) {
-                        scaled = (uint64_t)((double)buf[0] * ((double)buf[1] / (double)buf[2]));
-                    }
-                    totals_out[e] += scaled;
-                }
-            }
+static void cs_close(counter_set_t *cs) {
+    for (int i = 0; i < MAX_EVENTS; i++)
+        if (cs->fd[i] >= 0) {
+            close(cs->fd[i]);
+            cs->fd[i] = -1;
         }
-    }
 }
 
-/*
- * Built-in Zero-Config Automatic DRAM Bandwidth Calibrator
- */
-typedef struct {
-    const uint8_t *buf;
-    size_t start_offset;
-    size_t end_offset;
-    uint64_t sink;
-} bw_worker_arg_t;
-
-static void *bw_read_worker(void *arg) {
-    bw_worker_arg_t *w = (bw_worker_arg_t *)arg;
-    const uint8_t *p = w->buf + w->start_offset;
-    const uint8_t *end = w->buf + w->end_offset;
-    uint64_t sum = 0;
-
-#if defined(__AVX512F__)
-    __m512i acc0 = _mm512_setzero_si512();
-    __m512i acc1 = _mm512_setzero_si512();
-    for (; p + 128 <= end; p += 128) {
-        __m512i v0 = _mm512_load_si512((const __m512i *)p);
-        __m512i v1 = _mm512_load_si512((const __m512i *)(p + 64));
-        acc0 = _mm512_add_epi64(acc0, v0);
-        acc1 = _mm512_add_epi64(acc1, v1);
-    }
-    acc0 = _mm512_add_epi64(acc0, acc1);
-    uint64_t tmp[8];
-    _mm512_storeu_si512((__m512i *)tmp, acc0);
-    for (int i = 0; i < 8; i++) sum += tmp[i];
-#elif defined(__AVX2__)
-    __m256i acc0 = _mm256_setzero_si256();
-    __m256i acc1 = _mm256_setzero_si256();
-    for (; p + 64 <= end; p += 64) {
-        __m256i v0 = _mm256_load_si256((const __m256i *)p);
-        __m256i v1 = _mm256_load_si256((const __m256i *)(p + 32));
-        acc0 = _mm256_add_epi64(acc0, v0);
-        acc1 = _mm256_add_epi64(acc1, v1);
-    }
-    acc0 = _mm256_add_epi64(acc0, acc1);
-    uint64_t tmp[4];
-    _mm256_storeu_si256((__m256i *)tmp, acc0);
-    for (int i = 0; i < 4; i++) sum += tmp[i];
-#elif defined(__aarch64__)
-    uint64x2_t acc0 = vdupq_n_u64(0);
-    uint64x2_t acc1 = vdupq_n_u64(0);
-    for (; p + 64 <= end; p += 64) {
-        uint64x2_t v0 = vld1q_u64((const uint64_t *)p);
-        uint64x2_t v1 = vld1q_u64((const uint64_t *)(p + 16));
-        uint64x2_t v2 = vld1q_u64((const uint64_t *)(p + 32));
-        uint64x2_t v3 = vld1q_u64((const uint64_t *)(p + 48));
-        acc0 = vaddq_u64(acc0, vaddq_u64(v0, v1));
-        acc1 = vaddq_u64(acc1, vaddq_u64(v2, v3));
-    }
-    acc0 = vaddq_u64(acc0, acc1);
-    sum += vgetq_lane_u64(acc0, 0) + vgetq_lane_u64(acc0, 1);
-#else
-    const volatile uint64_t *q = (const volatile uint64_t *)p;
-    const volatile uint64_t *qend = (const volatile uint64_t *)end;
-    uint64_t s0 = 0, s1 = 0, s2 = 0, s3 = 0;
-    for (; q + 8 <= qend; q += 8) {
-        s0 += q[0] + q[1];
-        s1 += q[2] + q[3];
-        s2 += q[4] + q[5];
-        s3 += q[6] + q[7];
-    }
-    sum += s0 + s1 + s2 + s3;
-#endif
-    w->sink = sum;
-    return NULL;
-}
-
-static double auto_calibrate_peak_bandwidth(double effective_cpus, const pmu_event_def_t *events, int num_events) {
-    const size_t buf_size = 512ULL * 1024ULL * 1024ULL;
-    void *raw = NULL;
-    if (posix_memalign(&raw, 64, buf_size) != 0 || !raw) {
-        return 100.0;
-    }
-    memset(raw, 0x5A, buf_size);
-
-    tracked_proc_t self_proc;
-    memset(&self_proc, 0, sizeof(self_proc));
-    self_proc.pid = getpid();
-    self_proc.active = true;
-    bool has_pmu = open_pmu_for_proc(&self_proc, events, num_events);
-
-    int max_t = (int)ceil(effective_cpus);
-    if (max_t > 64) max_t = 64;
-    if (max_t < 1) max_t = 1;
-    int half_t = max_t / 2;
-    if (half_t < 1) half_t = 1;
-
-    int test_threads[2] = {half_t, max_t};
-    int num_tests = (half_t == max_t) ? 1 : 2;
-    double best_bw = 0.0;
-
-    for (int c = 0; c < num_tests; c++) {
-        int nt = test_threads[c];
-        pthread_t threads[64];
-        bw_worker_arg_t args[64];
-        size_t chunk = (buf_size / (size_t)nt) & ~127ULL;
-
-        for (int iter = 0; iter < 2; iter++) {
-            uint64_t pmu_start[MAX_EVENTS] = {0};
-            if (has_pmu) read_proc_pmu_totals(&self_proc, num_events, pmu_start);
-
-            double t0 = now_sec();
-            for (int i = 0; i < nt; i++) {
-                args[i].buf = (const uint8_t *)raw;
-                args[i].start_offset = (size_t)i * chunk;
-                args[i].end_offset = (i == nt - 1) ? (buf_size & ~127ULL) : ((size_t)(i + 1) * chunk);
-                args[i].sink = 0;
-                pthread_create(&threads[i], NULL, bw_read_worker, &args[i]);
-            }
-            for (int i = 0; i < nt; i++) {
-                pthread_join(threads[i], NULL);
-            }
-            double dt = now_sec() - t0;
-
-            double simd_gbs = (dt > 0.0001) ? ((double)buf_size / dt / 1e9) : 0.0;
-            double pmu_gbs = 0.0;
-            if (has_pmu && dt > 0.0001) {
-                uint64_t pmu_end[MAX_EVENTS] = {0};
-                read_proc_pmu_totals(&self_proc, num_events, pmu_end);
-                uint64_t lines = 0;
-                for (int e = 0; e < num_events; e++) {
-                    if (events[e].is_demand_dram || events[e].is_prefetch_dram) {
-                        if (pmu_end[e] > pmu_start[e]) lines += (pmu_end[e] - pmu_start[e]);
-                    }
-                }
-                pmu_gbs = (double)(lines * CACHE_LINE_BYTES) / dt / 1e9;
-            }
-
-            double measured = (pmu_gbs > simd_gbs) ? pmu_gbs : simd_gbs;
-            if (measured > best_bw) best_bw = measured;
-        }
-    }
-
-    if (has_pmu) close_tracked_proc(&self_proc, num_events);
-    free(raw);
-    return best_bw > 5.0 ? best_bw : 100.0;
-}
-
-static void diagnose_bottleneck(double total_bw_gbs, double util_pct, double cpu_pct,
-                                double ipc, long throttled_delta, double effective_cpus,
-                                char *status_out, size_t status_len, int *color_out) {
-    double cpu_quota_ratio = (cpu_pct / 100.0) / effective_cpus;
-    if (total_bw_gbs < 0.25 && cpu_pct < 5.0) {
-        snprintf(status_out, status_len, "IDLE");
-        *color_out = 90;
-    } else if (util_pct >= 42.0) {
-        snprintf(status_out, status_len, "MEMORY-BOUND (DRAM BW Saturated)");
-        *color_out = 32;
-    } else if ((throttled_delta > 15 || (cpu_quota_ratio > 0.88 && ipc < 0.32)) && util_pct < 42.0) {
-        snprintf(status_out, status_len, "LOCK-CONTENTION / CFS-THROTTLED");
-        *color_out = 31;
-    } else if (cpu_pct > 150.0 && util_pct < 42.0) {
-        snprintf(status_out, status_len, "COMPUTE-BOUND (Cache-Resident)");
-        *color_out = 34;
-    } else {
-        snprintf(status_out, status_len, "ACTIVE (Balanced Workload)");
-        *color_out = 33;
-    }
-}
-
-/* Scan /proc and update tracked processes */
-static int sync_and_sample_processes(pid_t filter_pid, const char *filter_name,
-                                     const pmu_event_def_t *events, int num_events,
-                                     double dt, long clk_tck, double effective_cpus,
-                                     double *peak_bw_gbs_inout, tracked_proc_t **sorted_out) {
-    for (int i = 0; i < MAX_PROCS; i++) {
-        g_procs[i].alive_in_scan = false;
-    }
-
-    DIR *dir = opendir("/proc");
-    if (!dir) return 0;
-
-    pid_t self_pid = getpid();
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        if (!isdigit((unsigned char)ent->d_name[0])) continue;
-        pid_t pid = (pid_t)atoi(ent->d_name);
-        if (pid <= 1 || pid == self_pid) continue;
-        if (filter_pid > 0 && pid != filter_pid) continue;
-        if (!is_user_process(pid)) continue;
-
-        char comm[64] = {0};
-        uint64_t ticks = 0;
-        int nthreads = 1;
-        if (!read_proc_stat(pid, &ticks, &nthreads, comm, sizeof(comm))) continue;
-        if (filter_name && filter_name[0] && strstr(comm, filter_name) == NULL) continue;
-
-        int slot = -1;
-        int free_slot = -1;
-        for (int i = 0; i < MAX_PROCS; i++) {
-            if (g_procs[i].active && g_procs[i].pid == pid) {
-                slot = i;
-                break;
-            }
-            if (!g_procs[i].active && free_slot < 0) {
-                free_slot = i;
-            }
-        }
-
-        if (slot < 0) {
-            if (free_slot < 0) continue;
-            slot = free_slot;
-            memset(&g_procs[slot], 0, sizeof(tracked_proc_t));
-            g_procs[slot].pid = pid;
-            snprintf(g_procs[slot].comm, sizeof(g_procs[slot].comm), "%s", comm);
-            g_procs[slot].num_threads = nthreads;
-            if (!open_pmu_for_proc(&g_procs[slot], events, num_events)) {
-                continue;
-            }
-            g_procs[slot].active = true;
-            g_procs[slot].alive_in_scan = true;
-            g_procs[slot].prev_cpu_ticks = ticks;
-            read_proc_pmu_totals(&g_procs[slot], num_events, g_procs[slot].prev_vals);
-            g_procs[slot].initialized = true;
-            diagnose_bottleneck(0, 0, 0, 0, 0, effective_cpus,
-                                g_procs[slot].status_tag, sizeof(g_procs[slot].status_tag),
-                                &g_procs[slot].status_color);
-            continue;
-        }
-
-        tracked_proc_t *p = &g_procs[slot];
-        p->alive_in_scan = true;
-        snprintf(p->comm, sizeof(p->comm), "%s", comm);
-
-        if (nthreads != p->num_threads) {
-            p->num_threads = nthreads;
-            close_tracked_proc(p, num_events);
-            p->pid = pid;
-            if (open_pmu_for_proc(p, events, num_events)) {
-                p->active = true;
-                p->alive_in_scan = true;
-                p->prev_cpu_ticks = ticks;
-                read_proc_pmu_totals(p, num_events, p->prev_vals);
-                p->initialized = true;
-            }
-            continue;
-        }
-
-        uint64_t ticks_delta = (ticks >= p->prev_cpu_ticks) ? (ticks - p->prev_cpu_ticks) : 0;
-        p->prev_cpu_ticks = ticks;
-
-        /* Fast-path: if process had 0 CPU ticks and 0 previous bandwidth, skip syscall read */
-        if (ticks_delta == 0 && p->total_bw_gbs < 0.01 && p->cpu_pct < 0.1) {
-            p->demand_bw_gbs = 0.0;
-            p->prefetch_bw_gbs = 0.0;
-            p->total_bw_gbs = 0.0;
-            p->util_pct = 0.0;
-            p->cpu_pct = 0.0;
-            p->ipc = 0.0;
-            diagnose_bottleneck(0, 0, 0, 0, 0, effective_cpus,
-                                p->status_tag, sizeof(p->status_tag), &p->status_color);
-            continue;
-        }
-
-        uint64_t cur_vals[MAX_EVENTS];
-        read_proc_pmu_totals(p, num_events, cur_vals);
-
-        uint64_t demand_lines = 0;
-        uint64_t prefetch_lines = 0;
-        uint64_t cycles_delta = 0;
-        uint64_t insns_delta = 0;
-
-        for (int e = 0; e < num_events; e++) {
-            uint64_t delta = (cur_vals[e] >= p->prev_vals[e]) ? (cur_vals[e] - p->prev_vals[e]) : 0;
-            p->prev_vals[e] = cur_vals[e];
-            if (events[e].is_demand_dram) demand_lines += delta;
-            if (events[e].is_prefetch_dram) prefetch_lines += delta;
-            if (events[e].is_cycles) cycles_delta += delta;
-            if (events[e].is_instructions) insns_delta += delta;
-        }
-
-        p->demand_bw_gbs = (double)(demand_lines * CACHE_LINE_BYTES) / dt / 1e9;
-        p->prefetch_bw_gbs = (double)(prefetch_lines * CACHE_LINE_BYTES) / dt / 1e9;
-        p->total_bw_gbs = p->demand_bw_gbs + p->prefetch_bw_gbs;
-        if (p->total_bw_gbs > *peak_bw_gbs_inout) {
-            *peak_bw_gbs_inout = p->total_bw_gbs;
-        }
-        p->util_pct = (p->total_bw_gbs / *peak_bw_gbs_inout) * 100.0;
-        if (p->util_pct > 100.0) p->util_pct = 100.0;
-
-        p->cpu_pct = ((double)ticks_delta / (double)clk_tck) / dt * 100.0;
-        p->ipc = (cycles_delta > 0) ? ((double)insns_delta / (double)cycles_delta) : 0.0;
-
-        diagnose_bottleneck(p->total_bw_gbs, p->util_pct, p->cpu_pct, p->ipc, 0,
-                            effective_cpus, p->status_tag, sizeof(p->status_tag), &p->status_color);
-    }
-    closedir(dir);
-
-    int count = 0;
-    for (int i = 0; i < MAX_PROCS; i++) {
-        if (g_procs[i].active) {
-            if (!g_procs[i].alive_in_scan) {
-                close_tracked_proc(&g_procs[i], num_events);
-            } else {
-                sorted_out[count++] = &g_procs[i];
-            }
-        }
-    }
-
-    for (int i = 0; i < count - 1; i++) {
-        for (int j = i + 1; j < count; j++) {
-            bool swap = false;
-            if (sorted_out[j]->total_bw_gbs > sorted_out[i]->total_bw_gbs + 0.005) {
-                swap = true;
-            } else if (fabs(sorted_out[j]->total_bw_gbs - sorted_out[i]->total_bw_gbs) <= 0.005) {
-                if (sorted_out[j]->cpu_pct > sorted_out[i]->cpu_pct + 0.1) {
-                    swap = true;
-                } else if (fabs(sorted_out[j]->cpu_pct - sorted_out[i]->cpu_pct) <= 0.1 &&
-                           sorted_out[j]->num_threads > sorted_out[i]->num_threads) {
-                    swap = true;
-                }
-            }
-            if (swap) {
-                tracked_proc_t *tmp = sorted_out[i];
-                sorted_out[i] = sorted_out[j];
-                sorted_out[j] = tmp;
-            }
-        }
-    }
-
-    return count;
-}
-
-static void format_bar(double pct, int width, bool use_color, char *out, size_t out_len) {
-    if (pct < 0.0) pct = 0.0;
-    if (pct > 100.0) pct = 100.0;
-    int filled = (int)round((pct / 100.0) * width);
-    if (filled > width) filled = width;
-
-    const char *color = "";
-    const char *reset = "";
-    if (use_color) {
-        color = "\033[1;32m";
-        if (pct >= 70.0) color = "\033[1;31m";
-        else if (pct >= 35.0) color = "\033[1;33m";
-        reset = "\033[0m";
-    }
-
-    int pos = snprintf(out, out_len, "[%s", color);
-    for (int i = 0; i < width && pos < (int)out_len - 16; i++) {
-        out[pos++] = (i < filled) ? '#' : '-';
-    }
-    snprintf(out + pos, out_len - (size_t)pos, "%s]", reset);
-}
-
-static const double g_interval_steps[] = {0.10, 0.25, 0.50, 1.00, 2.00, 5.00};
-#define NUM_INTERVAL_STEPS ((int)(sizeof(g_interval_steps) / sizeof(g_interval_steps[0])))
-
-static double step_interval(double cur, int dir) {
-    int best_idx = 3;
-    double min_diff = 1e9;
-    for (int i = 0; i < NUM_INTERVAL_STEPS; i++) {
-        double d = fabs(cur - g_interval_steps[i]);
-        if (d < min_diff) {
-            min_diff = d;
-            best_idx = i;
-        }
-    }
-    int next_idx = best_idx + dir;
-    if (next_idx < 0) next_idx = 0;
-    if (next_idx >= NUM_INTERVAL_STEPS) next_idx = NUM_INTERVAL_STEPS - 1;
-    return g_interval_steps[next_idx];
-}
-
-static char wait_or_read_key(double wait_sec) {
-    if (wait_sec < 0.0) wait_sec = 0.0;
-    if (!g_tui_active) {
-        if (wait_sec > 0.0) usleep((useconds_t)(wait_sec * 1e6));
+/* Scale each interval by its own enabled/running ratio: scaling the cumulative
+ * totals and then subtracting goes wrong whenever multiplexing varies. */
+static uint64_t ctr_delta(int fd, snap_t *s) {
+    uint64_t v[3];
+    if (fd < 0 || read(fd, v, sizeof v) != (ssize_t)sizeof v) return 0;
+    if (v[0] < s->val || v[1] < s->ena || v[2] < s->run) {
+        s->val = v[0], s->ena = v[1], s->run = v[2];
         return 0;
     }
-    struct timeval tv;
-    tv.tv_sec = (long)wait_sec;
-    tv.tv_usec = (long)((wait_sec - (double)tv.tv_sec) * 1e6);
+    uint64_t dv = v[0] - s->val, de = v[1] - s->ena, dr = v[2] - s->run;
+    s->val = v[0], s->ena = v[1], s->run = v[2];
+    if (dr == 0) return 0;
+    return de > dr ? (uint64_t)((double)dv * (double)de / (double)dr) : dv;
+}
 
-    fd_set rfds;
-    FD_ZERO(&rfds);
-    FD_SET(STDIN_FILENO, &rfds);
+static void cs_read(counter_set_t *cs, uint64_t acc[EV_KINDS]) {
+    for (int i = 0; i < g.nev; i++) acc[g.ev[i].kind] += ctr_delta(cs->fd[i], &cs->snap[i]);
+}
 
-    int ret = select(STDIN_FILENO + 1, &rfds, NULL, NULL, &tv);
-    if (ret > 0 && FD_ISSET(STDIN_FILENO, &rfds)) {
-        char ch = 0;
-        if (read(STDIN_FILENO, &ch, 1) == 1) {
-            return ch;
-        }
+static uint64_t total_lines(const uint64_t acc[EV_KINDS]) {
+    if (!g.has_total) return acc[EV_DEMAND] + acc[EV_PREFETCH];
+    return acc[EV_TOTAL] > acc[EV_DEMAND] ? acc[EV_TOTAL] : acc[EV_DEMAND];
+}
+
+#if defined(__aarch64__)
+static bool arm_event_listed(const char *name) {
+    DIR *d = opendir("/sys/bus/event_source/devices");
+    if (!d) return false;
+    struct dirent *de;
+    char path[512];
+    bool found = false;
+    while (!found && (de = readdir(d)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        snprintf(path, sizeof path, "/sys/bus/event_source/devices/%s/events/%s", de->d_name, name);
+        found = access(path, F_OK) == 0;
     }
+    closedir(d);
+    return found;
+}
+#endif
+
+static void select_events(const cpu_id_t *id, bool generic) {
+    int n = 0;
+    g.backend = NULL;
+    if (!generic && id->vendor == V_AMD && id->family >= 0x17) {
+        bool zen4 = id->family >= 0x1a ||
+                    (id->family == 0x19 && ((id->model >= 0x10 && id->model <= 0x1f) ||
+                                            (id->model >= 0x60 && id->model <= 0xaf)));
+        g.ev[n++] = (event_t){PERF_TYPE_RAW, 0x4843, EV_DEMAND};   /* ls_dmnd_fills_from_sys.all_dram_io */
+        g.ev[n++] = (event_t){PERF_TYPE_RAW, 0x485a, EV_PREFETCH}; /* ls_hw_pf_dc_fills.all_dram_io */
+        /* l2_pf_miss_l2_l3: from Zen 4 on, umask bits 5-7 are the L1 prefetchers,
+         * which 0x5a already counts, so only the L2 prefetcher bits are selected. */
+        g.ev[n++] = (event_t){PERF_TYPE_RAW, zen4 ? 0x1f72 : 0xff72, EV_PREFETCH};
+        g.backend = "AMD Zen PMU (demand + L1/L2 HW prefetch DRAM fills)";
+    } else if (!generic && id->vendor == V_INTEL) {
+        g.ev[n++] = (event_t){PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES, EV_TOTAL}; /* LONGEST_LAT_CACHE.MISS */
+        if (id->family == 6) g.ev[n++] = (event_t){PERF_TYPE_RAW, 0x20d1, EV_DEMAND};    /* MEM_LOAD_RETIRED.L3_MISS */
+        g.backend = "Intel PMU (LLC misses: demand loads + prefetch/other)";
+    }
+#if defined(__aarch64__)
+    /* The kernel accepts any raw ARM event; only sysfs tells whether it is implemented. */
+    else if (!generic && arm_event_listed("ll_cache_miss_rd")) {
+        g.ev[n++] = (event_t){PERF_TYPE_RAW, 0x37, EV_TOTAL};
+        g.backend = "Arm PMUv3 (LL_CACHE_MISS_RD)";
+    } else if (!generic && arm_event_listed("l2d_cache_refill")) {
+        g.ev[n++] = (event_t){PERF_TYPE_RAW, 0x17, EV_TOTAL};
+        g.backend = "Arm PMUv3 (L2D_CACHE_REFILL)";
+    }
+#endif
+    if (!g.backend) {
+        g.ev[n++] = (event_t){PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES, EV_TOTAL};
+        g.backend = "Generic PMU (LLC misses)";
+    }
+    g.ev[n++] = (event_t){PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, EV_CYCLES};
+    g.ev[n++] = (event_t){PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, EV_INSNS};
+    g.nev = n;
+    g.has_split = g.has_total = false;
+    for (int i = 0; i < n; i++) {
+        g.has_split |= g.ev[i].kind == EV_DEMAND;
+        g.has_total |= g.ev[i].kind == EV_TOTAL;
+    }
+}
+
+static int probe_event(const event_t *e) {
+    int fd = perf_open(e, 0, -1, false);
+    if (fd < 0) return errno;
+    close(fd);
     return 0;
 }
 
-static void render_tui_dashboard(
-    const char *cpu_model, double effective_cpus, int logical_cpus,
-    const char *backend_desc, const char *scope_desc, int total_procs,
-    double peak_bw_gbs, double max_observed_bw, double avg_bw, double interval,
-    bool paused, view_mode_t view_mode, tracked_proc_t **sorted_procs, int num_procs,
-    const sample_metrics_t *ring, int ring_count, int ring_head)
-{
-    const sample_metrics_t *cur = &ring[(ring_head - 1 + RING_SIZE) % RING_SIZE];
-    char main_bar[160];
-    char cpu_bar[160];
-    double cpu_util_pct = (cur->cpu_pct / (effective_cpus * 100.0)) * 100.0;
-    format_bar(cur->util_pct, 30, true, main_bar, sizeof(main_bar));
-    format_bar(cpu_util_pct, 30, true, cpu_bar, sizeof(cpu_bar));
+static void pmu_fail(int err) {
+    long long paranoid = -9;
+    switch (err) {
+    case ENOSYS:
+        fputs("dramtop: perf_event_open() is not supported by this kernel.\n", stderr);
+        break;
+    case EACCES:
+    case EPERM:
+        read_ll("/proc/sys/kernel/perf_event_paranoid", &paranoid);
+        fprintf(stderr,
+                "dramtop: perf_event_open() permission denied (kernel.perf_event_paranoid = %lld).\n"
+                "  Run as root or grant CAP_PERFMON; in Docker add --cap-add PERFMON (or use --privileged).\n",
+                paranoid);
+        break;
+    case ENOENT:
+    case ENODEV:
+    case EOPNOTSUPP:
+    case EINVAL:
+        fputs("dramtop: hardware performance counters are not available on this system.\n"
+              "  Virtual machines need a virtualized PMU; most cloud VMs and WSL2 do not expose one.\n",
+              stderr);
+        break;
+    default:
+        fprintf(stderr, "dramtop: perf_event_open() failed: %s\n", strerror(err));
+    }
+    exit(1);
+}
 
-    const char *view_name = (view_mode == VIEW_SPLIT) ? "Split (Top Procs + Timeline)" :
-                            (view_mode == VIEW_PROCS_ONLY) ? "Top Processes Only" : "Rolling Timeline Only";
+static void setup_pmu(const cpu_id_t *id) {
+    event_t cycles = {PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, EV_CYCLES};
+    g.kernel_ok = true;
+    int err = probe_event(&cycles);
+    if (err == EACCES || err == EPERM) {
+        g.kernel_ok = false;
+        err = probe_event(&cycles);
+    }
+    if (err) pmu_fail(err);
 
-    printf("\033[H");
-    printf("\033[1;36m==========================================================================================================\033[K\033[0m\n");
-    printf(" \033[1;37mdramtop v%s\033[0m  |  CPU: \033[1;33m%s\033[0m (Quota: %.1f cores / %d logical)\033[K\n",
-           DRAMTOP_VERSION, cpu_model, effective_cpus, logical_cpus);
-    printf(" PMU Backend   : %s\033[K\n", backend_desc);
-    printf(" Monitor Scope : \033[1;32m%s\033[0m (%d procs)  |  Refresh: %.2fs%s  |  View: \033[1;35m%s\033[0m\033[K\n",
-           scope_desc, total_procs, interval, paused ? " \033[1;41;37m [PAUSED] \033[0m" : "", view_name);
-    printf("\033[1;36m----------------------------------------------------------------------------------------------------------\033[K\033[0m\n");
-    printf(" \033[1mSystem DRAM BW\033[0m: %s \033[1;36m%6.2f GB/s\033[0m (%5.1f%% of %.1f GB/s Cap)\033[K\n",
-           main_bar, cur->total_bw_gbs, cur->util_pct, peak_bw_gbs);
-    printf("   ├─ Demand Rd: \033[1;37m%6.2f GB/s\033[0m   ├─ HW Prefetch: \033[1;37m%6.2f GB/s\033[0m   ├─ Session Peak/Avg: \033[1;33m%.2f\033[0m / \033[1;32m%.2f GB/s\033[0m\033[K\n",
-           cur->demand_bw_gbs, cur->prefetch_bw_gbs, max_observed_bw, avg_bw);
-    printf(" \033[1mCPU Quota Util\033[0m: %s \033[1;37m%6.0f%%\033[0m     (IPC: \033[1;37m%.2f\033[0m | Throttled: %ld)\033[K\n",
-           cpu_bar, cur->cpu_pct, cur->ipc, cur->throttled_delta);
-    printf(" \033[1mLive Diagnosis\033[0m: \033[1;%dm%s\033[0m  (Top Bandwidth Consumer: \033[1;33m%s\033[0m)\033[K\n",
-           cur->status_color, cur->status_tag, cur->top_comm[0] ? cur->top_comm : "none");
+    for (int generic = 0; generic <= 1; generic++) {
+        select_events(id, generic);
+        err = 0;
+        for (int i = 0; i < g.nev && !err; i++) err = probe_event(&g.ev[i]);
+        if (!err) return;
+    }
+    pmu_fail(err);
+}
 
-    int term_rows = get_term_rows();
-    int avail_rows = term_rows - 12;
-    if (avail_rows < 8) avail_rows = 8;
+static void sys_open(void) {
+    if (g.filter_pid > 0 || g.filter_name) return;
+    int fd = perf_open(&g.ev[0], -1, g.cpus[0], false);
+    if (fd < 0) return; /* per-CPU events need perf_event_paranoid <= 0 or CAP_PERFMON */
+    close(fd);
+    g.sys = xrealloc(NULL, (size_t)g.ncpus * sizeof *g.sys);
+    uint64_t scratch[EV_KINDS] = {0};
+    for (int c = 0; c < g.ncpus; c++) {
+        cs_init(&g.sys[c]);
+        for (int i = 0; i < g.nev; i++) g.sys[c].fd[i] = perf_open(&g.ev[i], -1, g.cpus[c], false);
+        if (g.sys[c].fd[0] >= 0) g.sys_cpus++;
+        cs_read(&g.sys[c], scratch);
+    }
+    g.sys_on = g.sys_cpus > 0;
+}
 
-    int proc_rows_to_show = 0;
-    int hist_rows_to_show = 0;
-    if (view_mode == VIEW_SPLIT) {
-        proc_rows_to_show = (avail_rows - 4) / 2;
-        if (proc_rows_to_show < 4) proc_rows_to_show = 4;
-        if (proc_rows_to_show > 8) proc_rows_to_show = 8;
-        hist_rows_to_show = avail_rows - proc_rows_to_show - 4;
-        if (hist_rows_to_show < 4) hist_rows_to_show = 4;
-        if (hist_rows_to_show > 10) hist_rows_to_show = 10;
-    } else if (view_mode == VIEW_PROCS_ONLY) {
-        proc_rows_to_show = avail_rows - 2;
-        if (proc_rows_to_show > 20) proc_rows_to_show = 20;
+/* ------------------------------------------------------------------ */
+/* Peak bandwidth calibration                                          */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    bool go;
+    pthread_barrier_t bar;
+    int sweeps; /* set by the main thread before each pass is released */
+} cal_sync_t;
+
+typedef struct {
+    cal_sync_t *sync;
+    uint8_t *base;
+    size_t len;
+    unsigned stride;
+    int cpu;
+    uint64_t sink;
+} cal_job_t;
+
+typedef struct {
+    int cpu, rank, l3, order;
+} cal_cpu_t;
+
+static int first_int(const char *path) {
+    char buf[64];
+    return read_file(path, buf, sizeof buf) > 0 ? (int)strtol(buf, NULL, 10) : -1;
+}
+
+static int cmp_cal_cpu(const void *a, const void *b) {
+    const cal_cpu_t *x = a, *y = b;
+    if (x->rank != y->rank) return x->rank - y->rank;
+    if (x->order != y->order) return x->order - y->order;
+    return x->l3 - y->l3;
+}
+
+/* Each last-level-cache domain (CCD/CCX on AMD) has its own link to the memory
+ * controllers; leaving thread placement to the scheduler can pile threads onto
+ * one domain and understate the peak, so spread them: physical cores first,
+ * round-robin across domains, SMT siblings last. */
+static int plan_cal_cpus(int *out, int max) {
+    cpu_set_t *set = CPU_ALLOC(8192);
+    size_t sz = CPU_ALLOC_SIZE(8192);
+    bool masked = set && sched_getaffinity(0, sz, set) == 0;
+    cal_cpu_t *c = xrealloc(NULL, (size_t)g.ncpus * sizeof *c);
+    char path[128];
+    int n = 0;
+    for (int i = 0; i < g.ncpus; i++) {
+        int cpu = g.cpus[i];
+        if (masked && cpu < 8192 && !CPU_ISSET_S((size_t)cpu, sz, set)) continue;
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cache/index3/id", cpu);
+        c[n].l3 = first_int(path);
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", cpu);
+        int sibling = first_int(path);
+        c[n].rank = sibling >= 0 && sibling != cpu;
+        c[n].cpu = cpu;
+        c[n].order = 0;
+        for (int k = 0; k < n; k++)
+            if (c[k].rank == c[n].rank && c[k].l3 == c[n].l3) c[n].order++;
+        n++;
+    }
+    if (set) CPU_FREE(set);
+    qsort(c, (size_t)n, sizeof *c, cmp_cal_cpu);
+    if (n > max) n = max;
+    for (int i = 0; i < n; i++) out[i] = c[i].cpu;
+    free(c);
+    return n;
+}
+
+static void pin_self(int cpu) {
+    cpu_set_t *set = CPU_ALLOC(8192);
+    size_t sz = CPU_ALLOC_SIZE(8192);
+    if (!set) return;
+    CPU_ZERO_S(sz, set);
+    CPU_SET_S((size_t)cpu, sz, set);
+    sched_setaffinity(0, sz, set);
+    CPU_FREE(set);
+}
+
+static void *cal_worker(void *arg) {
+    cal_job_t *j = arg;
+    pthread_mutex_lock(&j->sync->mu);
+    while (!j->sync->go) pthread_cond_wait(&j->sync->cv, &j->sync->mu);
+    pthread_mutex_unlock(&j->sync->mu);
+
+    if (j->cpu >= 0) pin_self(j->cpu);
+    memset(j->base, 0x5a, j->len); /* first touch puts the pages on this thread's NUMA node */
+    pthread_barrier_wait(&j->sync->bar);
+    size_t step = j->stride / sizeof(uint64_t), n = j->len / sizeof(uint64_t);
+    for (int pass = 0; pass < CAL_PASSES; pass++) {
+        pthread_barrier_wait(&j->sync->bar);
+        uint64_t s0 = 0, s1 = 0;
+        for (int k = 0; k < j->sync->sweeps; k++) {
+            /* One load per cache line moves the whole line from DRAM. */
+            const volatile uint64_t *p = (const volatile uint64_t *)j->base;
+            size_t i = 0;
+            for (; i + step < n; i += 2 * step) {
+                s0 += p[i];
+                s1 += p[i + step];
+            }
+            for (; i < n; i += step) s0 += p[i];
+        }
+        j->sink += s0 + s1;
+        pthread_barrier_wait(&j->sync->bar);
+    }
+    return NULL;
+}
+
+static double calibrate(void) {
+    unsigned long long bytes = mem_available() / 4;
+    if (bytes > CAL_MAX_BYTES) bytes = CAL_MAX_BYTES;
+    int nt = (int)g.eff_cpus, pins[CAL_MAX_THREADS];
+    if (nt < 1) nt = 1;
+    if (nt > CAL_MAX_THREADS) nt = CAL_MAX_THREADS;
+    int npins = plan_cal_cpus(pins, nt);
+    size_t chunk = (size_t)(bytes / (unsigned long long)nt) & ~(size_t)4095;
+    if (chunk < 4096 || (unsigned long long)chunk * (unsigned long long)nt < CAL_MIN_BYTES) return 0.0;
+
+    uint8_t *buf = NULL;
+    if (posix_memalign((void **)&buf, 4096, chunk * (size_t)nt)) return 0.0;
+
+    /* Opened with inherit=1 before the workers exist, so their fills are included. */
+    counter_set_t cs;
+    cs_init(&cs);
+    for (int i = 0; i < g.nev; i++)
+        if (g.ev[i].kind <= EV_TOTAL) cs.fd[i] = perf_open(&g.ev[i], 0, -1, true);
+
+    cal_sync_t sync = {.mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER, .sweeps = 1};
+    cal_job_t *jobs = xrealloc(NULL, (size_t)nt * sizeof *jobs);
+    pthread_t *th = xrealloc(NULL, (size_t)nt * sizeof *th);
+    int started = 0;
+    for (; started < nt; started++) {
+        jobs[started] = (cal_job_t){&sync, buf + (size_t)started * chunk, chunk, g.line,
+                                    started < npins ? pins[started] : -1, 0};
+        if (pthread_create(&th[started], NULL, cal_worker, &jobs[started])) break;
+    }
+
+    double best = 0.0;
+    if (started > 0) {
+        pthread_barrier_init(&sync.bar, NULL, (unsigned)started + 1);
+        pthread_mutex_lock(&sync.mu);
+        sync.go = true;
+        pthread_cond_broadcast(&sync.cv);
+        pthread_mutex_unlock(&sync.mu);
+        pthread_barrier_wait(&sync.bar);
+
+        uint64_t scratch[EV_KINDS] = {0};
+        cs_read(&cs, scratch);
+        for (int pass = 0; pass < CAL_PASSES; pass++) {
+            uint64_t acc[EV_KINDS] = {0};
+            double t0 = mono_now();
+            pthread_barrier_wait(&sync.bar);
+            pthread_barrier_wait(&sync.bar);
+            double dt = mono_now() - t0;
+            cs_read(&cs, acc);
+            if (dt <= 0) continue;
+            if (pass == 0) {
+                /* Warm-up pass: size the timed passes so short scheduler hiccups do not dominate. */
+                int sweeps = (int)(CAL_PASS_SEC / dt + 0.5);
+                sync.sweeps = sweeps < 1 ? 1 : sweeps > CAL_MAX_SWEEPS ? CAL_MAX_SWEEPS : sweeps;
+                continue;
+            }
+            double gbs = (double)chunk * started * sync.sweeps / dt / 1e9;
+            double pmu = (double)total_lines(acc) * g.line / dt / 1e9;
+            if (pmu > gbs) gbs = pmu;
+            if (gbs > best) best = gbs;
+        }
+        for (int i = 0; i < started; i++) pthread_join(th[i], NULL);
+        pthread_barrier_destroy(&sync.bar);
+    }
+    cs_close(&cs);
+    free(jobs);
+    free(th);
+    free(buf);
+    return best;
+}
+
+/* ------------------------------------------------------------------ */
+/* Process tracking                                                    */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    char comm[16];
+    char state;
+    pid_t ppid;
+    unsigned flags;
+    unsigned long long ticks, start;
+    int threads;
+} proc_stat_t;
+
+static bool read_stat(pid_t pid, proc_stat_t *st) {
+    char path[32], buf[1024];
+    snprintf(path, sizeof path, "/proc/%d/stat", pid);
+    if (read_file(path, buf, sizeof buf) <= 0) return false;
+    char *l = strchr(buf, '('), *r = strrchr(buf, ')');
+    if (!l || !r || r < l) return false;
+    size_t n = (size_t)(r - l - 1);
+    if (n >= sizeof st->comm) n = sizeof st->comm - 1;
+    memcpy(st->comm, l + 1, n);
+    st->comm[n] = '\0';
+    int ppid;
+    unsigned long utime, stime;
+    long threads;
+    if (sscanf(r + 2, "%c %d %*d %*d %*d %*d %u %*u %*u %*u %*u %lu %lu %*d %*d %*d %*d %ld %*d %llu",
+               &st->state, &ppid, &st->flags, &utime, &stime, &threads, &st->start) != 7)
+        return false;
+    st->ppid = ppid;
+    st->ticks = (unsigned long long)utime + stime;
+    st->threads = (int)threads;
+    return true;
+}
+
+/* Some runtimes (Node.js, Electron) rename the main thread to "MainThread". */
+static void make_name(pid_t pid, const char *comm, char *out, size_t n) {
+    copy_str(out, n, comm);
+    if (!strcmp(comm, "MainThread")) {
+        char path[40], buf[256];
+        snprintf(path, sizeof path, "/proc/%d/cmdline", pid);
+        if (read_file(path, buf, sizeof buf) > 0) {
+            const char *base = strrchr(buf, '/');
+            base = base ? base + 1 : buf;
+            if (*base) copy_str(out, n, base);
+        }
+    }
+    sanitize(out);
+}
+
+static int proc_index(pid_t pid) {
+    int lo = 0, hi = g.nprocs;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (g.procs[mid].pid < pid) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+static proc_t *proc_find(pid_t pid) {
+    int i = proc_index(pid);
+    return i < g.nprocs && g.procs[i].pid == pid ? &g.procs[i] : NULL;
+}
+
+static proc_t *proc_insert(pid_t pid) {
+    int i = proc_index(pid);
+    if (g.nprocs == g.cap) {
+        g.cap = g.cap ? g.cap * 2 : 256;
+        g.procs = xrealloc(g.procs, (size_t)g.cap * sizeof *g.procs);
+    }
+    memmove(&g.procs[i + 1], &g.procs[i], (size_t)(g.nprocs - i) * sizeof *g.procs);
+    g.nprocs++;
+    memset(&g.procs[i], 0, sizeof g.procs[i]);
+    g.procs[i].pid = pid;
+    return &g.procs[i];
+}
+
+static void uncover(pid_t ancestor) {
+    for (int i = 0; i < g.nprocs; i++)
+        if (g.procs[i].covered_by == ancestor) g.procs[i].covered_by = 0;
+}
+
+static int open_thread(counter_set_t *cs, pid_t tid) {
+    cs_init(cs);
+    int ok = 0;
+    for (int i = 0; i < g.nev; i++) {
+        cs->fd[i] = perf_open(&g.ev[i], tid, -1, true);
+        if (cs->fd[i] >= 0) {
+            ok++;
+            continue;
+        }
+        int e = errno;
+        if (e == EMFILE || e == ENFILE) g.fd_limited = true;
+        if (e == EMFILE || e == ENFILE || e == ESRCH || e == EACCES || e == EPERM) {
+            cs_close(cs);
+            return e == EACCES || e == EPERM ? -EACCES : e == ESRCH ? -ESRCH : -EMFILE;
+        }
+    }
+    return ok;
+}
+
+/* With inherit=1 on every existing thread, threads created later are counted
+ * by their creator's counters, so counters never need reopening on thread churn. */
+static bool attach_counters(proc_t *p, double now) {
+    char path[40];
+    snprintf(path, sizeof path, "/proc/%d/task", p->pid);
+    DIR *d = opendir(path);
+    if (!d) return false;
+    int cap = p->threads > 0 ? p->threads + 8 : 16, n = 0;
+    counter_set_t *cs = xrealloc(NULL, (size_t)cap * sizeof *cs);
+    bool denied = false;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (!isdigit((unsigned char)de->d_name[0])) continue;
+        if (n == cap) {
+            cap *= 2;
+            cs = xrealloc(cs, (size_t)cap * sizeof *cs);
+        }
+        int r = open_thread(&cs[n], (pid_t)atoi(de->d_name));
+        if (r > 0) n++;
+        else if (r == -EACCES) denied = true;
+        if (r == -EACCES || r == -EMFILE) break;
+    }
+    closedir(d);
+    if (denied || n == 0) {
+        for (int i = 0; i < n; i++) cs_close(&cs[i]);
+        free(cs);
+        p->denied = denied;
+        p->retry_at = now + ATTACH_RETRY_SEC;
+        return false;
+    }
+    uint64_t scratch[EV_KINDS] = {0};
+    for (int i = 0; i < n; i++) cs_read(&cs[i], scratch);
+    p->cs = cs;
+    p->ncs = n;
+    p->attached = true;
+    p->denied = false;
+    p->attach_ticks = boot_ticks();
+    return true;
+}
+
+/* A final read keeps the traffic of exiting threads, processes and inherited
+ * children; closing the counters also ends coverage of those children. */
+static void close_counters(proc_t *p, bool final_read) {
+    for (int i = 0; i < p->ncs; i++) {
+        if (final_read) cs_read(&p->cs[i], p->acc);
+        cs_close(&p->cs[i]);
+    }
+    free(p->cs);
+    p->cs = NULL;
+    p->ncs = 0;
+    p->attached = false;
+    uncover(p->pid);
+}
+
+static void move_to_pending(proc_t *p) {
+    for (int k = 0; k < EV_KINDS; k++) {
+        g.pending[k] += p->acc[k];
+        p->acc[k] = 0;
+    }
+}
+
+static void proc_release(proc_t *p) {
+    if (p->attached) close_counters(p, true);
+    else uncover(p->pid);
+    move_to_pending(p);
+}
+
+static void visit(pid_t pid, double now) {
+    proc_stat_t st;
+    if (pid == g.self || !read_stat(pid, &st)) return;
+    if ((st.flags & PF_KTHREAD) || st.state == 'Z' || st.state == 'X') return;
+
+    proc_t *p = proc_find(pid);
+    bool fresh = false;
+    if (p && p->start_ticks != st.start) { /* PID was reused */
+        proc_release(p);
+        memset(p, 0, sizeof *p);
+        p->pid = pid;
+        fresh = true;
+    }
+    char name[NAME_LEN];
+    if (p && !fresh && !strcmp(p->comm, st.comm)) memcpy(name, p->name, sizeof name);
+    else make_name(pid, st.comm, name, sizeof name);
+    if (g.filter_name && !strstr(name, g.filter_name)) return;
+
+    if (!p) {
+        p = proc_insert(pid);
+        fresh = true;
+    }
+    if (fresh) {
+        p->start_ticks = st.start;
+        /* Started since the previous scan: all of its CPU time is new. */
+        p->dticks = g.prev_boot && st.start >= g.prev_boot ? st.ticks : 0;
+        p->last_active = now;
+        proc_t *parent = proc_find(st.ppid);
+        if (parent && parent->attached && st.start + 1 >= parent->attach_ticks) p->covered_by = parent->pid;
+        else if (parent && parent->covered_by) p->covered_by = parent->covered_by;
     } else {
-        hist_rows_to_show = avail_rows - 2;
-        if (hist_rows_to_show > 20) hist_rows_to_show = 20;
+        p->dticks = st.ticks >= p->ticks ? st.ticks - p->ticks : 0;
+    }
+    p->ticks = st.ticks;
+    if (p->dticks) p->last_active = now;
+    p->seen = true;
+    p->ppid = st.ppid;
+    p->threads = st.threads;
+    memcpy(p->comm, st.comm, sizeof p->comm);
+    memcpy(p->name, name, sizeof p->name);
+}
+
+static void scan_procs(double now) {
+    unsigned long long boot = boot_ticks();
+    for (int i = 0; i < g.nprocs; i++) g.procs[i].seen = false;
+    if (g.filter_pid > 0) {
+        visit(g.filter_pid, now);
+    } else {
+        DIR *d = opendir("/proc");
+        if (d) {
+            struct dirent *de;
+            while ((de = readdir(d)) != NULL)
+                if (isdigit((unsigned char)de->d_name[0])) visit((pid_t)atoi(de->d_name), now);
+            closedir(d);
+        }
+    }
+    for (int i = 0; i < g.nprocs; i++)
+        if (!g.procs[i].seen) proc_release(&g.procs[i]);
+    int w = 0;
+    for (int i = 0; i < g.nprocs; i++)
+        if (g.procs[i].seen) g.procs[w++] = g.procs[i];
+    g.nprocs = w;
+    g.prev_boot = boot;
+}
+
+/* ------------------------------------------------------------------ */
+/* Sampling and diagnosis                                              */
+/* ------------------------------------------------------------------ */
+
+static void compute_rates(metrics_t *m, const uint64_t acc[EV_KINDS], double dt) {
+    double total = (double)total_lines(acc), demand = (double)acc[EV_DEMAND];
+    double prefetch = g.has_total ? total - demand : (double)acc[EV_PREFETCH];
+    double scale = (double)g.line / dt / 1e9;
+    m->total_gbs = total * scale;
+    m->demand_gbs = demand * scale;
+    m->prefetch_gbs = prefetch * scale;
+    m->ipc = acc[EV_CYCLES] ? (double)acc[EV_INSNS] / (double)acc[EV_CYCLES] : 0.0;
+    m->mpki = acc[EV_INSNS] ? total * 1000.0 / (double)acc[EV_INSNS] : 0.0;
+    m->has_bw = true;
+}
+
+static double util_of(double gbs) {
+    double u = g.peak > 0 ? gbs / g.peak * 100.0 : 0.0;
+    return u > 100.0 ? 100.0 : u;
+}
+
+/* Roofline-style heuristics on DRAM utilization, CPU time, IPC and DRAM MPKI.
+ * "Busy" means at least about one core of CPU time. */
+static state_t diagnose(const metrics_t *m, double throttle_ratio) {
+    if (!m->has_bw) return m->cpu_pct >= 5.0 ? ST_SAMPLING : ST_IDLE;
+    if (m->total_gbs < 0.25 && m->cpu_pct < 5.0) return ST_IDLE;
+    if (m->util_pct >= 42.0) return ST_MEM_BW;
+    if (throttle_ratio >= 0.25) return ST_CONTENTION;
+    bool busy = m->cpu_pct >= 90.0;
+    bool dram_stalls = m->mpki >= 10.0 || (m->mpki >= 3.0 && m->ipc > 0 && m->ipc < 0.5);
+    if (busy && dram_stalls) return ST_MEM_LAT;
+    /* Low IPC without DRAM misses while the CPU budget is exhausted: spinning or oversubscription. */
+    if (m->cpu_pct >= 90.0 * g.eff_cpus && m->ipc > 0 && m->ipc < 0.3) return ST_CONTENTION;
+    return busy ? ST_COMPUTE : ST_ACTIVE;
+}
+
+static int cmp_view(const void *a, const void *b) {
+    const proc_t *x = *(proc_t *const *)a, *y = *(proc_t *const *)b;
+    long bx = (long)(x->m.total_gbs * 100), by = (long)(y->m.total_gbs * 100);
+    if (bx != by) return bx < by ? 1 : -1;
+    long cx = (long)x->m.cpu_pct, cy = (long)y->m.cpu_pct;
+    if (cx != cy) return cx < cy ? 1 : -1;
+    return (x->pid > y->pid) - (x->pid < y->pid);
+}
+
+static void sample(sample_t *s, bool discard) {
+    double now = mono_now(), dt = now - g.scan_ts;
+    bool filtered = g.filter_pid > 0 || g.filter_name;
+    if (dt < 1e-3) dt = 1e-3;
+    scan_procs(now);
+    g.scan_ts = now;
+    g.fd_limited = false;
+
+    /* A covered child that becomes active needs counters of its own; re-arm
+     * the ancestor first so the child is not counted twice. */
+    for (int i = 0; i < g.nprocs; i++) {
+        proc_t *p = &g.procs[i];
+        if (!p->covered_by || !p->dticks) continue;
+        proc_t *a = proc_find(p->covered_by);
+        if (a && a->attached) a->rearm = true;
+        else p->covered_by = 0;
+    }
+    for (int i = 0; i < g.nprocs; i++) {
+        proc_t *a = &g.procs[i];
+        if (!a->rearm) continue;
+        a->rearm = false;
+        close_counters(a, true);
+        if (!attach_counters(a, now)) move_to_pending(a);
     }
 
-    if (proc_rows_to_show > 0) {
-        printf("\033[1;36m================================== [ TOP PROCESSES BY DRAM BANDWIDTH ] ===================================\033[K\033[0m\n");
-        printf(" \033[1;37m%-7s | %-15s | %-4s | %-11s | %-10s | %-11s | %-16s | %-6s | %-4s | %s\033[0m\033[K\n",
-               "PID", "PROCESS", "THR", "DRAM TOTAL", "DEMAND RD", "HW PREFETCH", "DRAM UTIL%", "CPU%", "IPC", "BOTTLENECK");
-        printf("----------------------------------------------------------------------------------------------------------\033[K\n");
-
-        int n_show = (num_procs < proc_rows_to_show) ? num_procs : proc_rows_to_show;
-        for (int i = 0; i < n_show; i++) {
-            const tracked_proc_t *p = sorted_procs[i];
-            char pbar[96];
-            format_bar(p->util_pct, 8, true, pbar, sizeof(pbar));
-            printf(" %-7d | %-15.15s | %4d | %6.2f GB/s | %5.2f GB/s | %6.2f GB/s | %s %5.1f%% | %5.0f%% | %4.2f | \033[1;%dm%s\033[0m\033[K\n",
-                   (int)p->pid, p->comm, p->num_threads, p->total_bw_gbs, p->demand_bw_gbs, p->prefetch_bw_gbs,
-                   pbar, p->util_pct, p->cpu_pct, p->ipc, p->status_color, p->status_tag);
+    for (int i = 0; i < g.nprocs; i++) {
+        proc_t *p = &g.procs[i];
+        if (p->attached || p->covered_by || now < p->retry_at || !(filtered || p->dticks)) continue;
+        if (attach_counters(p, now)) {
+            memset(p->acc, 0, sizeof p->acc);
+            p->last_read = now;
+            p->just_attached = true;
         }
     }
 
-    if (hist_rows_to_show > 0) {
-        printf("\033[1;36m=================================== [ REAL-TIME ROLLING TIMELINE ] =======================================\033[K\033[0m\n");
-        printf(" \033[1;37m%-8s | %-11s | %-10s | %-11s | %-16s | %-6s | %-4s | %-13s | %s\033[0m\033[K\n",
-               "TIME", "DRAM TOTAL", "DEMAND RD", "HW PREFETCH", "DRAM UTIL%", "CPU%", "IPC", "TOP PROCESS", "DIAGNOSIS");
-        printf("----------------------------------------------------------------------------------------------------------\033[K\n");
-
-        int show_n = (ring_count < hist_rows_to_show) ? ring_count : hist_rows_to_show;
-        for (int i = 0; i < show_n; i++) {
-            int idx = (ring_head - show_n + i + RING_SIZE) % RING_SIZE;
-            const sample_metrics_t *s = &ring[idx];
-            char sbar[96];
-            format_bar(s->util_pct, 8, true, sbar, sizeof(sbar));
-            printf(" %-8s | %6.2f GB/s | %5.2f GB/s | %6.2f GB/s | %s %5.1f%% | %5.0f%% | %4.2f | %-13.13s | \033[1;%dm%s\033[0m\033[K\n",
-                   s->time_str, s->total_bw_gbs, s->demand_bw_gbs, s->prefetch_bw_gbs,
-                   sbar, s->util_pct, s->cpu_pct, s->ipc,
-                   s->top_comm[0] ? s->top_comm : "-", s->status_color, s->status_tag);
+    uint64_t attributed[EV_KINDS];
+    memcpy(attributed, g.pending, sizeof attributed);
+    memset(g.pending, 0, sizeof g.pending);
+    double cpu_total = 0.0;
+    for (int i = 0; i < g.nprocs; i++) {
+        proc_t *p = &g.procs[i];
+        memset(&p->m, 0, sizeof p->m);
+        p->m.cpu_pct = (double)p->dticks / (double)g.clk_tck / dt * 100.0;
+        cpu_total += p->m.cpu_pct;
+        if (!p->attached) continue;
+        for (int c = 0; c < p->ncs; c++) cs_read(&p->cs[c], p->acc);
+        double pdt = now - p->last_read;
+        p->last_read = now;
+        if (p->acc[EV_CYCLES]) p->last_active = now;
+        if (p->just_attached) {
+            p->just_attached = false;
+        } else if (pdt > 1e-3) {
+            compute_rates(&p->m, p->acc, pdt);
+        }
+        for (int k = 0; k < EV_KINDS; k++) attributed[k] += p->acc[k];
+        memset(p->acc, 0, sizeof p->acc);
+        if (!filtered && now - p->last_active > IDLE_DETACH_SEC) {
+            close_counters(p, true);
+            move_to_pending(p);
         }
     }
 
-    printf("\033[1;36m----------------------------------------------------------------------------------------------------------\033[K\033[0m\n");
-    printf(" Keys: [\033[1;33mq\033[0m] Quit  [\033[1;33mt\033[0m] View  [\033[1;33mSpace\033[0m] Pause  [\033[1;33mr\033[0m] Reset  [\033[1;33m+\033[0m/\033[1;33m-\033[0m] Speed (%.2fs)  (-b batch / -J json)\033[K\033[J", interval);
+    uint64_t sys[EV_KINDS] = {0};
+    if (g.sys_on) {
+        for (int c = 0; c < g.ncpus; c++) cs_read(&g.sys[c], sys);
+    } else {
+        memcpy(sys, attributed, sizeof sys);
+    }
+    memset(s, 0, sizeof *s);
+    compute_rates(&s->m, sys, dt);
+    s->m.cpu_pct = cpu_total;
+    if (!discard && s->m.total_gbs > g.peak) g.peak = s->m.total_gbs;
+
+    double throttle = 0.0;
+    long long periods, throttled;
+    if (g.has_quota && read_cfs(&periods, &throttled)) {
+        if (g.cfs_ok) {
+            s->cfs_ok = true;
+            s->d_periods = periods - g.cfs_periods;
+            s->d_throttled = throttled - g.cfs_throttled;
+            if (s->d_periods > 0) throttle = (double)s->d_throttled / (double)s->d_periods;
+        }
+        g.cfs_ok = true;
+        g.cfs_periods = periods;
+        g.cfs_throttled = throttled;
+    }
+
+    s->m.util_pct = util_of(s->m.total_gbs);
+    s->m.state = diagnose(&s->m, throttle);
+
+    if (g.view_cap < g.nprocs + 1) {
+        g.view_cap = g.nprocs + 64;
+        g.view = xrealloc(g.view, (size_t)g.view_cap * sizeof *g.view);
+    }
+    g.nview = 0;
+    for (int i = 0; i < g.nprocs; i++) {
+        proc_t *p = &g.procs[i];
+        p->m.util_pct = util_of(p->m.total_gbs);
+        /* CFS throttling applies to the whole cgroup, so it also stalls every busy member. */
+        p->m.state = p->denied ? ST_NOACCESS : diagnose(&p->m, p->m.cpu_pct >= 90.0 ? throttle : 0.0);
+        g.view[g.nview++] = p;
+    }
+    if (g.sys_on) {
+        uint64_t rest[EV_KINDS];
+        for (int k = 0; k < EV_KINDS; k++) rest[k] = sys[k] > attributed[k] ? sys[k] - attributed[k] : 0;
+        memset(&g.other, 0, sizeof g.other);
+        snprintf(g.other.name, sizeof g.other.name, "[kernel/ephem]");
+        compute_rates(&g.other.m, rest, dt);
+        g.other.m.util_pct = util_of(g.other.m.total_gbs);
+        g.other.m.state = ST_OTHER;
+        if (g.other.m.total_gbs >= 0.05) g.view[g.nview++] = &g.other;
+    }
+    qsort(g.view, (size_t)g.nview, sizeof *g.view, cmp_view);
+
+    if (g.nview && (g.view[0]->m.total_gbs >= 0.05 || g.view[0]->m.cpu_pct >= 1.0)) {
+        snprintf(s->top, sizeof s->top, "%s", g.view[0]->name);
+        s->top_pid = g.view[0]->pid;
+    } else {
+        snprintf(s->top, sizeof s->top, "idle");
+    }
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    s->ts = (double)tv.tv_sec + (double)tv.tv_usec * 1e-6;
+    struct tm tm;
+    time_t t = tv.tv_sec;
+    localtime_r(&t, &tm);
+    strftime(s->time, sizeof s->time, "%H:%M:%S", &tm);
+}
+
+/* ------------------------------------------------------------------ */
+/* Output                                                              */
+/* ------------------------------------------------------------------ */
+
+static const char *bar(char *buf, size_t n, double pct, int width) {
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    int fill = (int)(pct * width / 100.0 + 0.5);
+    int k = snprintf(buf, n, "[%s", C(pct >= 70 ? RED : pct >= 35 ? YELLOW : GREEN));
+    for (int i = 0; i < width && k < (int)n - 8; i++) buf[k++] = i < fill ? '#' : '-';
+    snprintf(buf + k, n - (size_t)k, "%s]", C(RST));
+    return buf;
+}
+
+static const char *fmt_bw(char *buf, size_t n, bool ok, double v, int width) {
+    if (ok) snprintf(buf, n, "%*.2f GB/s", width, v);
+    else snprintf(buf, n, "%*s", width + 5, "-");
+    return buf;
+}
+
+static const char *fmt_ipc(char *buf, size_t n, double v) {
+    if (v > 0) snprintf(buf, n, "%4.2f", v);
+    else snprintf(buf, n, "%4s", "-");
+    return buf;
+}
+
+static void cpu_budget(char *buf, size_t n) {
+    if (g.has_quota) snprintf(buf, n, "Quota: %.1f cores / %d logical", g.eff_cpus, g.ncpus);
+    else if ((int)g.eff_cpus < g.ncpus) snprintf(buf, n, "%d of %d logical CPUs", (int)g.eff_cpus, g.ncpus);
+    else snprintf(buf, n, "%d logical CPUs", g.ncpus);
+}
+
+static int g_rows, g_line;
+
+__attribute__((format(printf, 1, 2))) static void out_line(const char *fmt, ...) {
+    if (g_line >= g_rows) return;
+    if (g_line > 0) fputc('\n', stdout);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stdout, fmt, ap);
+    va_end(ap);
+    fputs(g_color ? RST "\033[K" : "\033[K", stdout);
+    g_line++;
+}
+
+static void proc_header(void) {
+    out_line("%s================================== [ TOP PROCESSES BY DRAM BANDWIDTH ] ===================================", C(CYAN));
+    out_line(" %s%-7s | %-15s | %-4s | %-11s | %-10s | %-11s | %-17s | %-6s | %-4s | %s%s", C(WHITE), "PID", "PROCESS",
+             "THR", "DRAM TOTAL", "DEMAND RD", "HW PREFETCH", "DRAM UTIL%", "CPU%", "IPC", "BOTTLENECK", C(RST));
+    out_line("%s", DASH);
+}
+
+static void proc_row(const proc_t *p) {
+    char pid[16] = "-", thr[16] = "-", tot[24], dem[24], pf[24], ipc[16], ub[96], up[16];
+    bool other = p == &g.other, split = p->m.has_bw && g.has_split;
+    if (!other) {
+        snprintf(pid, sizeof pid, "%d", p->pid);
+        snprintf(thr, sizeof thr, "%d", p->threads);
+    }
+    if (p->m.has_bw) snprintf(up, sizeof up, "%5.1f%%", p->m.util_pct);
+    else snprintf(up, sizeof up, "%6s", "-");
+    out_line(" %-7s | %-15.15s | %4s | %s | %s | %s | %s %s | %5.0f%% | %s | %s%s%s", pid, p->name, thr,
+             fmt_bw(tot, sizeof tot, p->m.has_bw, p->m.total_gbs, 6), fmt_bw(dem, sizeof dem, split, p->m.demand_gbs, 5),
+             fmt_bw(pf, sizeof pf, split, p->m.prefetch_gbs, 6), bar(ub, sizeof ub, p->m.util_pct, 8), up,
+             p->m.cpu_pct, fmt_ipc(ipc, sizeof ipc, p->m.ipc), C(STATE[p->m.state].color), STATE[p->m.state].label,
+             C(RST));
+}
+
+static void timeline_header(void) {
+    out_line("%s=================================== [ REAL-TIME ROLLING TIMELINE ] =======================================", C(CYAN));
+    out_line(" %s%-8s | %-11s | %-10s | %-11s | %-17s | %-6s | %-4s | %-13s | %s%s", C(WHITE), "TIME", "DRAM TOTAL",
+             "DEMAND RD", "HW PREFETCH", "DRAM UTIL%", "CPU%", "IPC", "TOP PROCESS", "DIAGNOSIS", C(RST));
+    out_line("%s", DASH);
+}
+
+static void timeline_row(const sample_t *s) {
+    char tot[24], dem[24], pf[24], ipc[16], ub[96];
+    out_line(" %-8s | %s | %s | %s | %s %5.1f%% | %5.0f%% | %s | %-13.13s | %s%s%s", s->time,
+             fmt_bw(tot, sizeof tot, true, s->m.total_gbs, 6), fmt_bw(dem, sizeof dem, g.has_split, s->m.demand_gbs, 5),
+             fmt_bw(pf, sizeof pf, g.has_split, s->m.prefetch_gbs, 6), bar(ub, sizeof ub, s->m.util_pct, 8),
+             s->m.util_pct, s->m.cpu_pct, fmt_ipc(ipc, sizeof ipc, s->m.ipc), s->top, C(STATE[s->m.state].color),
+             STATE[s->m.state].label, C(RST));
+}
+
+static void render(const sample_t *ring, int count, int head, int view, bool paused) {
+    static const sample_t placeholder = {.time = "--:--:--", .top = "-", .m = {.state = ST_SAMPLING}};
+    const sample_t *cur = count ? &ring[(head + RING_SIZE - 1) % RING_SIZE] : &placeholder;
+    struct winsize ws;
+    bool filtered = g.filter_pid > 0 || g.filter_name;
+    char budget[64], b1[96], b2[96], ipc[16], thr[48];
+
+    g_rows = ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 ? ws.ws_row : 24;
+    g_line = 0;
+    fputs("\033[H", stdout);
+
+    cpu_budget(budget, sizeof budget);
+    if (cur->cfs_ok) snprintf(thr, sizeof thr, "%lld/%lld periods", cur->d_throttled, cur->d_periods);
+    else snprintf(thr, sizeof thr, "n/a");
+    out_line("%s%s", C(CYAN), RULE);
+    out_line(" %sdramtop v%s%s  |  CPU: %s%s%s (%s)", C(WHITE), DRAMTOP_VERSION, C(RST), C(YELLOW), g.cpu_name, C(RST),
+             budget);
+    out_line(" PMU Backend   : %s", g.backend);
+    out_line(" Monitor Scope : %s%s%s (%d procs)%s  |  Refresh: %.2fs%s  |  View: %s%s%s", C(GREEN), g.scope, C(RST),
+             g.nprocs, g.fd_limited ? " [fd limit reached]" : "", g.interval, paused ? " [PAUSED]" : "", C(MAGENTA),
+             VIEW_NAME[view], C(RST));
+    out_line("%s%s", C(CYAN), DASH);
+    out_line(" %s%s%s: %s %s%6.2f GB/s%s (%5.1f%% of %.1f GB/s cap)", C(BOLD),
+             filtered ? "Filter DRAM BW" : "System DRAM BW", C(RST), bar(b1, sizeof b1, cur->m.util_pct, 30), C(CYAN),
+             cur->m.total_gbs, C(RST), cur->m.util_pct, g.peak);
+    if (g.has_split)
+        out_line("   ├─ Demand Rd: %s%6.2f GB/s%s   ├─ HW Prefetch: %s%6.2f GB/s%s   ├─ Session Max/Avg: %s%.2f%s / %s%.2f GB/s%s",
+                 C(WHITE), cur->m.demand_gbs, C(RST), C(WHITE), cur->m.prefetch_gbs, C(RST), C(YELLOW), g.max_bw, C(RST),
+                 C(GREEN), g.nsamples ? g.sum_bw / (double)g.nsamples : 0.0, C(RST));
+    else
+        out_line("   ├─ Demand/Prefetch split: n/a on this CPU   ├─ Session Max/Avg: %s%.2f%s / %s%.2f GB/s%s",
+                 C(YELLOW), g.max_bw, C(RST), C(GREEN), g.nsamples ? g.sum_bw / (double)g.nsamples : 0.0, C(RST));
+    out_line(" %s%s%s: %s %s%6.0f%%%s     (IPC %s | MPKI %.1f | Throttled %s)", C(BOLD),
+             g.has_quota ? "CPU Quota Util" : "CPU Util      ", C(RST),
+             bar(b2, sizeof b2, cur->m.cpu_pct / g.eff_cpus, 30), C(WHITE), cur->m.cpu_pct, C(RST),
+             fmt_ipc(ipc, sizeof ipc, cur->m.ipc), cur->m.mpki, thr);
+    out_line(" %sLive Diagnosis%s: %s%s%s  (Top Bandwidth Consumer: %s%s%s)", C(BOLD), C(RST),
+             C(STATE[cur->m.state].color), STATE[cur->m.state].label, C(RST), C(YELLOW), cur->top, C(RST));
+
+    int body = g_rows - 11, np = 0, nh = 0;
+    if (view == VIEW_SPLIT) {
+        int data = body - 6 < 2 ? 2 : body - 6;
+        np = (data + 1) / 2;
+        nh = data - np;
+        if (g.nview < np) {
+            nh += np - g.nview;
+            np = g.nview;
+        }
+    } else if (view == VIEW_PROCS) {
+        np = body - 3;
+    } else {
+        nh = body - 3;
+    }
+    if (np > g.nview) np = g.nview;
+    if (nh > count) nh = count;
+    if (view != VIEW_TIMELINE) {
+        proc_header();
+        for (int i = 0; i < np; i++) proc_row(g.view[i]);
+    }
+    if (view != VIEW_PROCS) {
+        timeline_header();
+        for (int i = 0; i < nh; i++) timeline_row(&ring[(head - nh + i + RING_SIZE) % RING_SIZE]);
+    }
+    out_line("%s%s", C(CYAN), DASH);
+    out_line(" Keys: [%sq%s] Quit  [%st%s] View  [%sSpace%s] Pause  [%sr%s] Reset  [%s+%s/%s-%s] Interval  (-b batch, -J json)",
+             C(YELLOW), C(RST), C(YELLOW), C(RST), C(YELLOW), C(RST), C(YELLOW), C(RST), C(YELLOW), C(RST), C(YELLOW),
+             C(RST));
+    fputs("\033[J", stdout);
     fflush(stdout);
 }
 
-static void print_json_sample(const sample_metrics_t *sys_m, double peak_bw_gbs,
-                              tracked_proc_t **sorted_procs, int num_procs) {
-    printf("{\"time\":\"%s\",\"timestamp\":%.3f,\"system\":{\"total_bw_gbs\":%.3f,"
-           "\"demand_bw_gbs\":%.3f,\"prefetch_bw_gbs\":%.3f,\"peak_cap_gbs\":%.2f,"
-           "\"util_pct\":%.2f,\"cpu_pct\":%.1f,\"ipc\":%.3f,\"throttled\":%ld,"
-           "\"top_process\":\"%s\",\"top_pid\":%d,\"diagnosis\":\"%s\"},\"top_processes\":[",
-           sys_m->time_str, sys_m->timestamp, sys_m->total_bw_gbs,
-           sys_m->demand_bw_gbs, sys_m->prefetch_bw_gbs, peak_bw_gbs,
-           sys_m->util_pct, sys_m->cpu_pct, sys_m->ipc, sys_m->throttled_delta,
-           sys_m->top_comm, (int)sys_m->top_pid, sys_m->status_tag);
+static void print_batch_header(void) {
+    char budget[64];
+    cpu_budget(budget, sizeof budget);
+    printf("%s\n", RULE);
+    printf("dramtop v%s | CPU: %s (%s)\n", DRAMTOP_VERSION, g.cpu_name, budget);
+    printf("PMU Backend   : %s\n", g.backend);
+    printf("Monitor Scope : %s (%d procs) | DRAM cap: %.1f GB/s (%s)\n", g.scope, g.nprocs, g.peak,
+           g.ceiling > 0 ? "manual" : "calibrated");
+    printf("%s\n", RULE);
+    printf("%-8s | %-11s | %-10s | %-11s | %-17s | %-6s | %-4s | %-13s | %s\n", "TIME", "DRAM TOTAL", "DEMAND RD",
+           "HW PREFETCH", "DRAM UTIL%", "CPU%", "IPC", "TOP PROCESS", "DIAGNOSIS");
+    printf("%s\n", DASH);
+    fflush(stdout);
+}
 
-    int max_p = (num_procs < 5) ? num_procs : 5;
-    for (int i = 0; i < max_p; i++) {
-        const tracked_proc_t *p = sorted_procs[i];
-        printf("%s{\"pid\":%d,\"comm\":\"%s\",\"threads\":%d,\"total_bw_gbs\":%.3f,"
-               "\"demand_bw_gbs\":%.3f,\"prefetch_bw_gbs\":%.3f,\"util_pct\":%.2f,"
-               "\"cpu_pct\":%.1f,\"ipc\":%.3f,\"diagnosis\":\"%s\"}",
-               (i > 0) ? "," : "", (int)p->pid, p->comm, p->num_threads,
-               p->total_bw_gbs, p->demand_bw_gbs, p->prefetch_bw_gbs,
-               p->util_pct, p->cpu_pct, p->ipc, p->status_tag);
+static void print_batch(const sample_t *s) {
+    char tot[24], dem[24], pf[24], ipc[16], ub[96];
+    printf("%-8s | %s | %s | %s | %s %5.1f%% | %5.0f%% | %s | %-13.13s | %s%s%s\n", s->time,
+           fmt_bw(tot, sizeof tot, true, s->m.total_gbs, 6), fmt_bw(dem, sizeof dem, g.has_split, s->m.demand_gbs, 5),
+           fmt_bw(pf, sizeof pf, g.has_split, s->m.prefetch_gbs, 6), bar(ub, sizeof ub, s->m.util_pct, 8),
+           s->m.util_pct, s->m.cpu_pct, fmt_ipc(ipc, sizeof ipc, s->m.ipc), s->top, C(STATE[s->m.state].color),
+           STATE[s->m.state].label, C(RST));
+    fflush(stdout);
+}
+
+static void json_str(const char *s) {
+    putchar('"');
+    for (; *s; s++) {
+        if (*s == '"' || *s == '\\') putchar('\\');
+        putchar(*s);
+    }
+    putchar('"');
+}
+
+static void json_bw(const char *key, bool ok, double v) {
+    if (ok) printf("\"%s\":%.3f,", key, v);
+    else printf("\"%s\":null,", key);
+}
+
+static void print_json(const sample_t *s) {
+    printf("{\"time\":\"%s\",\"timestamp\":%.3f,\"mode\":\"%s\",\"system\":{\"total_bw_gbs\":%.3f,", s->time, s->ts,
+           g.sys_on ? "per-cpu" : "per-thread", s->m.total_gbs);
+    json_bw("demand_bw_gbs", g.has_split, s->m.demand_gbs);
+    json_bw("prefetch_bw_gbs", g.has_split, s->m.prefetch_gbs);
+    printf("\"peak_cap_gbs\":%.2f,\"util_pct\":%.2f,\"cpu_pct\":%.1f,\"ipc\":%.3f,\"mpki\":%.2f,", g.peak,
+           s->m.util_pct, s->m.cpu_pct, s->m.ipc, s->m.mpki);
+    if (s->cfs_ok) printf("\"throttled\":%lld,\"periods\":%lld,", s->d_throttled, s->d_periods);
+    else printf("\"throttled\":null,\"periods\":null,");
+    printf("\"top_process\":");
+    json_str(s->top);
+    printf(",\"top_pid\":%d,\"diagnosis\":\"%s\"},\"top_processes\":[", s->top_pid, STATE[s->m.state].label);
+    int n = g.nview < JSON_TOP_PROCS ? g.nview : JSON_TOP_PROCS;
+    for (int i = 0; i < n; i++) {
+        const proc_t *p = g.view[i];
+        bool split = p->m.has_bw && g.has_split;
+        printf("%s{\"pid\":%d,\"comm\":", i ? "," : "", p->pid);
+        json_str(p->name);
+        printf(",\"threads\":%d,", p->threads);
+        json_bw("total_bw_gbs", p->m.has_bw, p->m.total_gbs);
+        json_bw("demand_bw_gbs", split, p->m.demand_gbs);
+        json_bw("prefetch_bw_gbs", split, p->m.prefetch_gbs);
+        printf("\"util_pct\":%.2f,\"cpu_pct\":%.1f,\"ipc\":%.3f,\"diagnosis\":\"%s\"}", p->m.util_pct, p->m.cpu_pct,
+               p->m.ipc, STATE[p->m.state].label);
     }
     printf("]}\n");
     fflush(stdout);
 }
 
-static void print_usage(const char *prog) {
-    printf("dramtop v%s - Real-time DRAM Memory Bandwidth & Bottleneck Monitor for Linux\n\n", DRAMTOP_VERSION);
-    printf("Usage:\n");
-    printf("  %s [options]\n\n", prog);
-    printf("Options:\n");
-    printf("  -p, --pid <PID>        Monitor only a specific process PID (default: all active processes)\n");
-    printf("  -P, --proc <NAME>      Monitor only processes matching NAME (e.g., python3, postgres)\n");
-    printf("  -i, --interval <SEC>   Refresh interval in seconds (default: 1.0)\n");
-    printf("  -n, --count <N>        Exit after N samples (default: 0 = infinite)\n");
-    printf("  -c, --ceiling <GB/s>   Override DRAM bandwidth ceiling in GB/s (default: auto-calibrate)\n");
-    printf("  -b, --batch            Batch mode: scroll line-by-line instead of in-place TUI (for logs/pipes)\n");
-    printf("  -J, --json             JSON Lines (NDJSON) streaming output for telemetry/Grafana/CI\n");
-    printf("  -v, --version          Print version and exit\n");
-    printf("  -h, --help             Show this help message\n");
+/* ------------------------------------------------------------------ */
+/* Terminal and signals                                                */
+/* ------------------------------------------------------------------ */
+
+static void on_signal(int sig) {
+    if (sig == SIGWINCH) g_winch = 1;
+    else if (sig == SIGTSTP) g_tstp = 1;
+    else g_stop = 1;
 }
 
-int main(int argc, char **argv) {
-    pid_t filter_pid = -1;
-    const char *filter_name = NULL;
-    double interval = 1.0;
-    int max_count = 0;
-    double manual_ceiling = 0.0;
-    bool batch_mode = !isatty(STDOUT_FILENO) || !isatty(STDIN_FILENO);
-    bool json_mode = false;
-    view_mode_t view_mode = VIEW_SPLIT;
+static void install_handler(int sig) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_signal;
+    sigemptyset(&sa.sa_mask);
+    sigaction(sig, &sa, NULL);
+}
 
-    static struct option long_opts[] = {
-        {"pid",       required_argument, 0, 'p'},
-        {"proc",      required_argument, 0, 'P'},
-        {"interval",  required_argument, 0, 'i'},
-        {"count",     required_argument, 0, 'n'},
-        {"ceiling",   required_argument, 0, 'c'},
-        {"batch",     no_argument,       0, 'b'},
-        {"json",      no_argument,       0, 'J'},
-        {"version",   no_argument,       0, 'v'},
-        {"help",      no_argument,       0, 'h'},
-        {0, 0, 0, 0}
+static void tui_enter(void) {
+    if (tcgetattr(STDIN_FILENO, &g_saved_tio) != 0) return;
+    struct termios t = g_saved_tio;
+    t.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
+    t.c_cc[VMIN] = 0;
+    t.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &t) != 0) return;
+    /* Alternate screen, auto-wrap off (long rows are clipped, not wrapped), cursor hidden. */
+    fputs("\033[?1049h\033[?7l\033[?25l\033[2J\033[H", stdout);
+    fflush(stdout);
+    g_tui = true;
+}
+
+static void tui_leave(void) {
+    if (!g_tui) return;
+    fputs(g_color ? RST "\033[?25h\033[?7h\033[?1049l" : "\033[?25h\033[?7h\033[?1049l", stdout);
+    fflush(stdout);
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_saved_tio);
+    g_tui = false;
+}
+
+static void suspend_self(void) {
+    tui_leave();
+    signal(SIGTSTP, SIG_DFL);
+    raise(SIGTSTP);
+    install_handler(SIGTSTP);
+    tui_enter();
+}
+
+static int wait_key(double sec) {
+    if (sec < 0) sec = 0;
+    if (!g_tui) {
+        struct timespec ts = {(time_t)sec, (long)((sec - (double)(time_t)sec) * 1e9)};
+        nanosleep(&ts, NULL);
+        return 0;
+    }
+    struct pollfd pfd = {.fd = STDIN_FILENO, .events = POLLIN};
+    if (poll(&pfd, 1, (int)(sec * 1000.0 + 0.5)) <= 0) return 0;
+    if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
+        g_stop = 1;
+        return 0;
+    }
+    unsigned char ch;
+    return read(STDIN_FILENO, &ch, 1) == 1 ? ch : 0;
+}
+
+static double dist(double a, double b) { return a > b ? a - b : b - a; }
+
+static double step_interval(double cur, int dir) {
+    static const double steps[] = {0.10, 0.25, 0.50, 1.00, 2.00, 5.00};
+    const int n = (int)(sizeof steps / sizeof steps[0]);
+    int best = 0;
+    for (int i = 1; i < n; i++)
+        if (dist(cur, steps[i]) < dist(cur, steps[best])) best = i;
+    best += dir;
+    return steps[best < 0 ? 0 : best >= n ? n - 1 : best];
+}
+
+/* ------------------------------------------------------------------ */
+/* Command line                                                        */
+/* ------------------------------------------------------------------ */
+
+static void usage(FILE *out) {
+    fprintf(out,
+            "dramtop v%s - real-time DRAM bandwidth monitor for Linux\n\n"
+            "Usage: dramtop [options]\n\n"
+            "Options:\n"
+            "  -p, --pid <PID>        Monitor a single process (and children it forks)\n"
+            "  -P, --proc <NAME>      Monitor processes whose name contains NAME\n"
+            "  -i, --interval <SEC>   Refresh interval in seconds (default: 1.0)\n"
+            "  -n, --count <N>        Exit after N samples (default: run until stopped)\n"
+            "  -c, --ceiling <GB/s>   DRAM bandwidth ceiling; skips the startup calibration\n"
+            "  -b, --batch            Line-by-line output instead of the full-screen TUI\n"
+            "  -J, --json             JSON Lines output, one object per sample\n"
+            "  -v, --version          Print version and exit\n"
+            "  -h, --help             Show this help\n\n"
+            "Colors are disabled when NO_COLOR is set or output is not a terminal.\n",
+            DRAMTOP_VERSION);
+}
+
+static void bad_arg(const char *opt, const char *val) {
+    fprintf(stderr, "dramtop: invalid value for %s: '%s'\nTry 'dramtop --help'.\n", opt, val);
+    exit(2);
+}
+
+static double parse_double(const char *opt, const char *s, double lo, double hi) {
+    char *end;
+    errno = 0;
+    double v = strtod(s, &end);
+    if (errno || end == s || *end || v < lo || v > hi) bad_arg(opt, s);
+    return v;
+}
+
+static long parse_long(const char *opt, const char *s, long lo, long hi) {
+    char *end;
+    errno = 0;
+    long v = strtol(s, &end, 10);
+    if (errno || end == s || *end || v < lo || v > hi) bad_arg(opt, s);
+    return v;
+}
+
+static void parse_args(int argc, char **argv) {
+    static const struct option opts[] = {
+        {"pid", required_argument, 0, 'p'},     {"proc", required_argument, 0, 'P'},
+        {"interval", required_argument, 0, 'i'}, {"count", required_argument, 0, 'n'},
+        {"ceiling", required_argument, 0, 'c'},  {"batch", no_argument, 0, 'b'},
+        {"json", no_argument, 0, 'J'},           {"version", no_argument, 0, 'v'},
+        {"help", no_argument, 0, 'h'},           {0, 0, 0, 0},
     };
-
     int opt;
-    while ((opt = getopt_long(argc, argv, "p:P:i:n:c:bJvh", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "p:P:i:n:c:bJvh", opts, NULL)) != -1) {
         switch (opt) {
-            case 'p': filter_pid = (pid_t)atoi(optarg); break;
-            case 'P': filter_name = optarg; break;
-            case 'i': interval = atof(optarg); if (interval < 0.1) interval = 0.1; break;
-            case 'n': max_count = atoi(optarg); break;
-            case 'c': manual_ceiling = atof(optarg); break;
-            case 'b': batch_mode = true; break;
-            case 'J': json_mode = true; batch_mode = true; break;
-            case 'v': printf("dramtop v%s\n", DRAMTOP_VERSION); return 0;
-            case 'h': print_usage(argv[0]); return 0;
-            default:  print_usage(argv[0]); return 1;
+        case 'p': g.filter_pid = (pid_t)parse_long("--pid", optarg, 1, 0x7fffffff); break;
+        case 'P': g.filter_name = *optarg ? optarg : NULL; break;
+        case 'i': g.interval = parse_double("--interval", optarg, 0.1, 3600.0); break;
+        case 'n': g.max_count = parse_long("--count", optarg, 1, 0x7fffffff); break;
+        case 'c': g.ceiling = parse_double("--ceiling", optarg, 0.1, 1e6); break;
+        case 'b': g.batch = true; break;
+        case 'J': g.json = g.batch = true; break;
+        case 'v': printf("dramtop v%s\n", DRAMTOP_VERSION); exit(0);
+        case 'h': usage(stdout); exit(0);
+        default: fputs("Try 'dramtop --help'.\n", stderr); exit(2);
         }
     }
+    if (optind < argc) {
+        fprintf(stderr, "dramtop: unexpected argument '%s'\nTry 'dramtop --help'.\n", argv[optind]);
+        exit(2);
+    }
+}
 
-    signal(SIGINT, handle_sigint);
-    signal(SIGTERM, handle_sigint);
-    signal(SIGWINCH, handle_sigwinch);
+/* ------------------------------------------------------------------ */
+/* Main                                                                */
+/* ------------------------------------------------------------------ */
+
+int main(int argc, char **argv) {
+    parse_args(argc, argv);
+    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) g.batch = true;
+    const char *no_color = getenv("NO_COLOR");
+    g_color = !g.json && isatty(STDOUT_FILENO) && !(no_color && *no_color);
+
+    install_handler(SIGINT);
+    install_handler(SIGTERM);
+    install_handler(SIGHUP);
+    install_handler(SIGWINCH);
     raise_fd_limit();
 
-    char cpu_model[256];
-    cpu_arch_t arch = detect_cpu_arch(cpu_model, sizeof(cpu_model));
-    int logical_cpus = 1;
-    double effective_cpus = detect_effective_cpus(&logical_cpus);
+    g.self = getpid();
+    g.clk_tck = sysconf(_SC_CLK_TCK) > 0 ? sysconf(_SC_CLK_TCK) : 100;
+    cpu_id_t id;
+    detect_cpu(&id);
+    detect_cpus();
+    detect_cpu_budget();
+    g.line = detect_line_size();
+    setup_pmu(&id);
 
-    pmu_event_def_t events[MAX_EVENTS];
-    const char *backend_desc = "";
-    int num_events = build_pmu_events(arch, events, &backend_desc);
-
-    double peak_bw_gbs = (manual_ceiling > 1.0)
-                             ? manual_ceiling
-                             : auto_calibrate_peak_bandwidth(effective_cpus, events, num_events);
-
-    long clk_tck = sysconf(_SC_CLK_TCK);
-    if (clk_tck <= 0) clk_tck = 100;
-
-    sys_cpu_pmu_t sys_pmu;
-    memset(&sys_pmu, 0, sizeof(sys_pmu));
-    bool use_sys_cpu_pmu = (filter_pid <= 0 && (!filter_name || !filter_name[0]));
-    if (use_sys_cpu_pmu) {
-        if (open_sys_cpu_pmu(&sys_pmu, logical_cpus, events, num_events)) {
-            read_sys_cpu_pmu_totals(&sys_pmu, num_events, sys_pmu.prev_vals);
-        }
-    }
-
-    char scope_desc[128] = "All System Processes (System-Wide)";
-    if (filter_pid > 0) {
-        snprintf(scope_desc, sizeof(scope_desc), "PID %d", (int)filter_pid);
-    } else if (filter_name && filter_name[0]) {
-        snprintf(scope_desc, sizeof(scope_desc), "Process Filter: '%s'", filter_name);
-    } else if (sys_pmu.available) {
-        snprintf(scope_desc, sizeof(scope_desc), "Per-CPU System PMU (pid=-1, %d CPUs, %s)",
-                 sys_pmu.opened_cpus, sys_pmu.include_kernel ? "Kernel+User" : "User");
-    } else {
-        snprintf(scope_desc, sizeof(scope_desc), "All Processes (Thread-PMU Container Mode)");
-    }
-
-    tracked_proc_t *sorted_procs[MAX_PROCS + 1];
-    tracked_proc_t kernel_ephem_proc;
-    memset(&kernel_ephem_proc, 0, sizeof(kernel_ephem_proc));
-    long prev_throttled = read_cgroup_throttled();
-    double prev_ts = now_sec();
-    int num_procs = sync_and_sample_processes(filter_pid, filter_name, events, num_events,
-                                              1.0, clk_tck, effective_cpus, &peak_bw_gbs, sorted_procs);
-    if (num_procs == 0 && !sys_pmu.available) {
-        fprintf(stderr, "dramtop: No matching accessible processes found.\n");
+    scan_procs(mono_now()); /* CPU-time baseline; the calibration below doubles as the activity window */
+    g.scan_ts = mono_now();
+    if (g.filter_pid > 0 && !proc_find(g.filter_pid)) {
+        fprintf(stderr, "dramtop: no such process: %d\n", g.filter_pid);
         return 1;
     }
 
-    bool use_color = isatty(STDOUT_FILENO) && (getenv("NO_COLOR") == NULL);
-    if (!batch_mode) {
-        enter_tui_mode();
-    } else if (!json_mode) {
-        printf("==========================================================================================================\n");
-        printf("dramtop v%s | CPU: %s (Quota: %.1f cores / %d logical)\n",
-               DRAMTOP_VERSION, cpu_model, effective_cpus, logical_cpus);
-        printf("PMU Backend   : %s\n", backend_desc);
-        printf("Monitor Scope : %s (%d active processes) | Auto-Calibrated DRAM Cap: %.1f GB/s\n",
-               scope_desc, num_procs, peak_bw_gbs);
-        printf("==========================================================================================================\n");
-        printf("%-8s | %-11s | %-10s | %-11s | %-16s | %-6s | %-4s | %-13s | %s\n",
-               "TIME", "DRAM TOTAL", "DEMAND RD", "HW PREFETCH", "DRAM UTIL%", "CPU%", "IPC", "TOP PROCESS", "DIAGNOSIS");
-        printf("----------------------------------------------------------------------------------------------------------\n");
+    if (g.ceiling > 0) {
+        g.peak = g.ceiling;
+    } else {
+        bool tell = isatty(STDERR_FILENO) && !g.json;
+        if (tell) fputs("dramtop: measuring peak DRAM bandwidth (skip with -c <GB/s>)...", stderr);
+        g.peak = calibrate();
+        if (tell) fputs("\r\033[K", stderr);
+        if (g.peak <= 0) g.peak = 100.0;
     }
 
-    sample_metrics_t ring[RING_SIZE];
-    memset(ring, 0, sizeof(ring));
-    snprintf(ring[RING_SIZE - 1].status_tag, sizeof(ring[RING_SIZE - 1].status_tag), "SAMPLING...");
-    ring[RING_SIZE - 1].status_color = 33;
-    int ring_head = 0;
-    int ring_count = 0;
-    double max_observed_bw = 0.0;
-    double sum_bw = 0.0;
-    int stat_samples = 0;
-    bool paused = false;
+    sys_open();
+    if (g.filter_pid > 0) snprintf(g.scope, sizeof g.scope, "PID %d", g.filter_pid);
+    else if (g.filter_name) snprintf(g.scope, sizeof g.scope, "Process filter '%.40s'", g.filter_name);
+    else if (g.sys_on)
+        snprintf(g.scope, sizeof g.scope, "Per-CPU System PMU (pid=-1, %d CPUs, %s)", g.sys_cpus,
+                 g.kernel_ok ? "Kernel+User" : "User");
+    else snprintf(g.scope, sizeof g.scope, "All Processes (Thread-PMU Container Mode)");
 
-    if (g_tui_active) {
-        render_tui_dashboard(cpu_model, effective_cpus, logical_cpus, backend_desc,
-                             scope_desc, num_procs, peak_bw_gbs,
-                             0.0, 0.0, interval, paused, view_mode,
-                             sorted_procs, num_procs, ring, ring_count, ring_head);
+    double since = mono_now() - g.scan_ts;
+    if (since < 0.25) wait_key(0.25 - since);
+    sample_t ring[RING_SIZE], scratch;
+    sample(&scratch, true); /* attach counters to processes that were active in the window */
+
+    if (!g.batch) {
+        tui_enter();
+        if (g_tui) {
+            atexit(tui_leave);
+            install_handler(SIGTSTP);
+        }
     }
+    if (!g_tui) g.batch = true;
+    if (g.batch && !g.json) print_batch_header();
 
-    int iter = 0;
+    int head = 0, count = 0, view = VIEW_SPLIT;
+    long printed = 0;
+    bool paused = false, exited = false;
+    if (g_tui) render(ring, count, head, view, paused);
+
     while (!g_stop) {
-        while (!g_stop) {
-            double elapsed = now_sec() - prev_ts;
-            double rem = paused ? 0.25 : (interval - elapsed);
-            if (!paused && rem <= 0.0) break;
-
-            char key = wait_or_read_key(rem);
-            if (g_stop || key == 'q' || key == 'Q') {
-                g_stop = 1;
-                break;
-            }
-
-            bool need_redraw = false;
-            if (g_winch) {
-                g_winch = 0;
-                need_redraw = true;
-            }
-            if (key == 0 && !need_redraw) {
-                if (!paused) break; /* Timeout reached, time to sample */
+        double next = g.scan_ts + g.interval;
+        for (;;) {
+            if (g_stop) break;
+            if (g_tstp) {
+                g_tstp = 0;
+                suspend_self();
+                if (!paused) sample(&scratch, true);
+                next = g.scan_ts + g.interval;
+                if (g_tui) render(ring, count, head, view, paused);
                 continue;
             }
-
-            if (key == 'r' || key == 'R') {
-                max_observed_bw = 0.0;
-                sum_bw = 0.0;
-                stat_samples = 0;
-                ring_count = 0;
-                ring_head = 0;
-                need_redraw = true;
-            } else if (key == 't' || key == 'T' || key == '\t') {
-                view_mode = (view_mode_t)((view_mode + 1) % 3);
-                need_redraw = true;
-            } else if (key == ' ' || key == 'p' || key == 'P') {
+            if (g_winch) {
+                g_winch = 0;
+                if (g_tui) render(ring, count, head, view, paused);
+            }
+            double rem = paused ? 0.5 : next - mono_now();
+            if (!paused && rem <= 0) break;
+            int key = wait_key(rem);
+            if (!key) continue;
+            switch (key) {
+            case 'q': case 'Q':
+                g_stop = 1;
+                break;
+            case 't': case 'T': case '\t':
+                view = (view + 1) % VIEW_COUNT;
+                break;
+            case 'r': case 'R':
+                count = head = 0;
+                g.max_bw = g.sum_bw = 0.0;
+                g.nsamples = 0;
+                break;
+            case ' ': case 'p': case 'P':
                 paused = !paused;
-                if (!paused) prev_ts = now_sec();
-                need_redraw = true;
-            } else if (key == '+' || key == '=') {
-                interval = step_interval(interval, -1); /* Faster: smaller interval */
-                need_redraw = true;
-            } else if (key == '-' || key == '_') {
-                interval = step_interval(interval, +1); /* Slower: larger interval */
-                need_redraw = true;
+                if (!paused) { /* drop what accumulated while paused */
+                    sample(&scratch, true);
+                    next = g.scan_ts + g.interval;
+                }
+                break;
+            case '+': case '=':
+                g.interval = step_interval(g.interval, -1);
+                next = g.scan_ts + g.interval;
+                break;
+            case '-': case '_':
+                g.interval = step_interval(g.interval, +1);
+                next = g.scan_ts + g.interval;
+                break;
+            default:
+                continue;
             }
-
-            if (need_redraw && g_tui_active) {
-                double avg_bw = (stat_samples > 0) ? (sum_bw / (double)stat_samples) : 0.0;
-                render_tui_dashboard(cpu_model, effective_cpus, logical_cpus, backend_desc,
-                                     scope_desc, num_procs, peak_bw_gbs,
-                                     max_observed_bw, avg_bw, interval, paused, view_mode,
-                                     sorted_procs, num_procs, ring, ring_count, ring_head);
-            }
+            if (g_tui && !g_stop) render(ring, count, head, view, paused);
         }
         if (g_stop) break;
 
-        double cur_ts = now_sec();
-        double dt = cur_ts - prev_ts;
-        if (dt <= 0.0001) dt = 0.0001;
-        prev_ts = cur_ts;
+        sample_t *s = &ring[head];
+        sample(s, false);
+        head = (head + 1) % RING_SIZE;
+        if (count < RING_SIZE) count++;
+        g.nsamples++;
+        g.sum_bw += s->m.total_gbs;
+        if (s->m.total_gbs > g.max_bw) g.max_bw = s->m.total_gbs;
 
-        num_procs = sync_and_sample_processes(filter_pid, filter_name, events, num_events,
-                                              dt, clk_tck, effective_cpus, &peak_bw_gbs, sorted_procs);
+        if (g_tui) render(ring, count, head, view, paused);
+        else if (g.json) print_json(s);
+        else print_batch(s);
 
-        long cur_throttled = read_cgroup_throttled();
-        long throttled_delta = (cur_throttled >= 0 && prev_throttled >= 0) ? (cur_throttled - prev_throttled) : 0;
-        prev_throttled = cur_throttled;
-
-        sample_metrics_t sys_m;
-        memset(&sys_m, 0, sizeof(sys_m));
-        sys_m.throttled_delta = throttled_delta;
-
-        double weighted_ipc_sum = 0.0;
-        double weight_sum = 0.0;
-        for (int i = 0; i < num_procs; i++) {
-            sys_m.demand_bw_gbs += sorted_procs[i]->demand_bw_gbs;
-            sys_m.prefetch_bw_gbs += sorted_procs[i]->prefetch_bw_gbs;
-            sys_m.total_bw_gbs += sorted_procs[i]->total_bw_gbs;
-            sys_m.cpu_pct += sorted_procs[i]->cpu_pct;
-            if (sorted_procs[i]->cpu_pct > 0.5) {
-                weighted_ipc_sum += sorted_procs[i]->ipc * sorted_procs[i]->cpu_pct;
-                weight_sum += sorted_procs[i]->cpu_pct;
-            }
+        if (g.max_count > 0 && ++printed >= g.max_count) break;
+        if (g.filter_pid > 0 && !proc_find(g.filter_pid)) {
+            exited = true;
+            break;
         }
-        sys_m.ipc = (weight_sum > 0.0) ? (weighted_ipc_sum / weight_sum) :
-                    (num_procs > 0 ? sorted_procs[0]->ipc : 0.0);
-
-        /* If Tier-1 Per-CPU System-Wide PMU (pid=-1, cpu=0..N) is active, use exact hardware totals */
-        if (sys_pmu.available) {
-            uint64_t cur_sys_vals[MAX_EVENTS];
-            read_sys_cpu_pmu_totals(&sys_pmu, num_events, cur_sys_vals);
-            uint64_t sys_demand_lines = 0, sys_prefetch_lines = 0;
-            uint64_t sys_cycles = 0, sys_insns = 0;
-            for (int e = 0; e < num_events; e++) {
-                uint64_t delta = (cur_sys_vals[e] >= sys_pmu.prev_vals[e]) ?
-                                 (cur_sys_vals[e] - sys_pmu.prev_vals[e]) : 0;
-                sys_pmu.prev_vals[e] = cur_sys_vals[e];
-                if (events[e].is_demand_dram) sys_demand_lines += delta;
-                if (events[e].is_prefetch_dram) sys_prefetch_lines += delta;
-                if (events[e].is_cycles) sys_cycles += delta;
-                if (events[e].is_instructions) sys_insns += delta;
-            }
-            double hw_demand_bw = (double)(sys_demand_lines * CACHE_LINE_BYTES) / dt / 1e9;
-            double hw_prefetch_bw = (double)(sys_prefetch_lines * CACHE_LINE_BYTES) / dt / 1e9;
-            double hw_total_bw = hw_demand_bw + hw_prefetch_bw;
-
-            if (hw_total_bw > sys_m.total_bw_gbs + 0.05 && num_procs < MAX_PROCS) {
-                memset(&kernel_ephem_proc, 0, sizeof(kernel_ephem_proc));
-                kernel_ephem_proc.pid = 0;
-                snprintf(kernel_ephem_proc.comm, sizeof(kernel_ephem_proc.comm), "[kernel/ephem]");
-                kernel_ephem_proc.num_threads = sys_pmu.opened_cpus;
-                kernel_ephem_proc.demand_bw_gbs = (hw_demand_bw > sys_m.demand_bw_gbs) ?
-                                                  (hw_demand_bw - sys_m.demand_bw_gbs) : 0.0;
-                kernel_ephem_proc.prefetch_bw_gbs = (hw_prefetch_bw > sys_m.prefetch_bw_gbs) ?
-                                                    (hw_prefetch_bw - sys_m.prefetch_bw_gbs) : 0.0;
-                kernel_ephem_proc.total_bw_gbs = hw_total_bw - sys_m.total_bw_gbs;
-                kernel_ephem_proc.util_pct = (kernel_ephem_proc.total_bw_gbs / peak_bw_gbs) * 100.0;
-                kernel_ephem_proc.ipc = (sys_cycles > 0) ? ((double)sys_insns / (double)sys_cycles) : 0.0;
-                snprintf(kernel_ephem_proc.status_tag, sizeof(kernel_ephem_proc.status_tag), "KERNEL / EPHEMERAL");
-                kernel_ephem_proc.status_color = 36;
-
-                int ins = num_procs;
-                while (ins > 0 && sorted_procs[ins - 1]->total_bw_gbs < kernel_ephem_proc.total_bw_gbs) {
-                    sorted_procs[ins] = sorted_procs[ins - 1];
-                    ins--;
-                }
-                sorted_procs[ins] = &kernel_ephem_proc;
-                num_procs++;
-            }
-
-            if (hw_total_bw > sys_m.total_bw_gbs) {
-                sys_m.demand_bw_gbs = hw_demand_bw;
-                sys_m.prefetch_bw_gbs = hw_prefetch_bw;
-                sys_m.total_bw_gbs = hw_total_bw;
-            }
-            if (sys_cycles > 0) {
-                sys_m.ipc = (double)sys_insns / (double)sys_cycles;
-            }
-        }
-
-        if (num_procs > 0 && (sorted_procs[0]->total_bw_gbs > 0.05 || sorted_procs[0]->cpu_pct > 1.0)) {
-            snprintf(sys_m.top_comm, sizeof(sys_m.top_comm), "%s", sorted_procs[0]->comm);
-            sys_m.top_pid = sorted_procs[0]->pid;
-        } else {
-            snprintf(sys_m.top_comm, sizeof(sys_m.top_comm), "idle");
-            sys_m.top_pid = 0;
-        }
-
-        if (sys_m.total_bw_gbs > peak_bw_gbs) {
-            peak_bw_gbs = sys_m.total_bw_gbs;
-        }
-        if (sys_m.total_bw_gbs > max_observed_bw) {
-            max_observed_bw = sys_m.total_bw_gbs;
-        }
-        sum_bw += sys_m.total_bw_gbs;
-        stat_samples++;
-        double avg_bw = sum_bw / (double)stat_samples;
-
-        sys_m.util_pct = (sys_m.total_bw_gbs / peak_bw_gbs) * 100.0;
-        if (sys_m.util_pct > 100.0) sys_m.util_pct = 100.0;
-
-        diagnose_bottleneck(sys_m.total_bw_gbs, sys_m.util_pct, sys_m.cpu_pct,
-                            sys_m.ipc, sys_m.throttled_delta, effective_cpus,
-                            sys_m.status_tag, sizeof(sys_m.status_tag), &sys_m.status_color);
-
-        struct timeval tv_now;
-        gettimeofday(&tv_now, NULL);
-        sys_m.timestamp = (double)tv_now.tv_sec + (double)tv_now.tv_usec * 1e-6;
-        time_t now_t = tv_now.tv_sec;
-        struct tm tm_now;
-        localtime_r(&now_t, &tm_now);
-        strftime(sys_m.time_str, sizeof(sys_m.time_str), "%H:%M:%S", &tm_now);
-
-        ring[ring_head] = sys_m;
-        ring_head = (ring_head + 1) % RING_SIZE;
-        if (ring_count < RING_SIZE) ring_count++;
-
-        if (g_tui_active) {
-            render_tui_dashboard(cpu_model, effective_cpus, logical_cpus, backend_desc,
-                                 scope_desc, num_procs, peak_bw_gbs,
-                                 max_observed_bw, avg_bw, interval, paused, view_mode,
-                                 sorted_procs, num_procs, ring, ring_count, ring_head);
-        } else if (json_mode) {
-            print_json_sample(&sys_m, peak_bw_gbs, sorted_procs, num_procs);
-        } else {
-            char bar[96];
-            format_bar(sys_m.util_pct, 8, use_color, bar, sizeof(bar));
-            if (use_color) {
-                printf("%-8s | %6.2f GB/s | %5.2f GB/s | %6.2f GB/s | %s %5.1f%% | %5.0f%% | %4.2f | %-13.13s | \033[1;%dm%s\033[0m\n",
-                       sys_m.time_str, sys_m.total_bw_gbs, sys_m.demand_bw_gbs, sys_m.prefetch_bw_gbs,
-                       bar, sys_m.util_pct, sys_m.cpu_pct, sys_m.ipc,
-                       sys_m.top_comm, sys_m.status_color, sys_m.status_tag);
-            } else {
-                printf("%-8s | %6.2f GB/s | %5.2f GB/s | %6.2f GB/s | %s %5.1f%% | %5.0f%% | %4.2f | %-13.13s | %s\n",
-                       sys_m.time_str, sys_m.total_bw_gbs, sys_m.demand_bw_gbs, sys_m.prefetch_bw_gbs,
-                       bar, sys_m.util_pct, sys_m.cpu_pct, sys_m.ipc,
-                       sys_m.top_comm, sys_m.status_tag);
-            }
-            fflush(stdout);
-        }
-
-        iter++;
-        if (max_count > 0 && iter >= max_count) break;
     }
 
-    leave_tui_mode();
-    close_sys_cpu_pmu(&sys_pmu, num_events);
-    for (int i = 0; i < MAX_PROCS; i++) {
-        close_tracked_proc(&g_procs[i], num_events);
-    }
+    tui_leave();
+    if (exited) fprintf(stderr, "dramtop: process %d exited\n", g.filter_pid);
+    for (int i = 0; i < g.nprocs; i++)
+        if (g.procs[i].attached) close_counters(&g.procs[i], false);
+    for (int c = 0; g.sys_on && c < g.ncpus; c++) cs_close(&g.sys[c]);
     return 0;
 }
