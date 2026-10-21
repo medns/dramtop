@@ -30,16 +30,6 @@ sudo chmod +x /usr/local/bin/dramtop
 dramtop
 ```
 
-**或通过 Linux 包管理器安装**：
-
-```sh
-# Debian / Ubuntu
-sudo apt update && sudo apt install -y dramtop
-
-# RHEL / CentOS / Rocky / TencentOS / Fedora
-sudo yum install -y dramtop
-```
-
 ## ✨ 核心特性
 
 | 能力维度 | 功能说明 |

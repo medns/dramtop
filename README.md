@@ -30,16 +30,6 @@ sudo chmod +x /usr/local/bin/dramtop
 dramtop
 ```
 
-**Or install via Linux package manager**:
-
-```sh
-# Debian / Ubuntu
-sudo apt update && sudo apt install -y dramtop
-
-# RHEL / CentOS / Rocky / TencentOS / Fedora
-sudo yum install -y dramtop
-```
-
 ## ✨ Features
 
 | Capability | What it does |
