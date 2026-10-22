@@ -86,9 +86,37 @@ static void test_mode(void) {
     CHECK(m.batch && !m.color && !m.tell);
 }
 
+static void test_platform_columns(void) {
+    g.info = (dt_info_t){.has_split = true, .has_cfs = true}; /* Linux on AMD or Intel */
+    const char *const *t = timeline_titles();
+    CHECK_STR(t[0], "DEMAND RD");
+    CHECK_STR(t[1], "HW PREFETCH");
+    CHECK_STR(t[2], "IPC");
+
+    g.info = (dt_info_t){.has_rw = true, .has_gpu = true, .estimated = true}; /* macOS */
+    t = timeline_titles();
+    CHECK_STR(t[0], "READ");
+    CHECK_STR(t[1], "WRITE");
+    CHECK_STR(t[2], "GPU%");
+
+    dt_proc_t p = {.m = {.has_bw = true}};
+    p.confidence = 0.9;
+    CHECK_INT(conf_mark(&p), ' ');
+    p.confidence = 0.5;
+    CHECK_INT(conf_mark(&p), '~');
+    p.confidence = 0.2;
+    CHECK_INT(conf_mark(&p), '?');
+    p.m.has_bw = false;
+    CHECK_INT(conf_mark(&p), ' ');
+    g.info.estimated = false;
+    p.m.has_bw = true;
+    CHECK_INT(conf_mark(&p), ' ');
+}
+
 int main(void) {
     test_names();
     test_format();
     test_mode();
+    test_platform_columns();
     return check_done("test_output");
 }

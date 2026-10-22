@@ -11,15 +11,21 @@ endif
 
 # The compiler's target, not the build host, picks the platform code, so cross compilers work too.
 TARGET   := $(shell $(CC) -dumpmachine 2>/dev/null)
-PLATFORM := $(if $(findstring linux,$(TARGET)),linux)
+PLATFORM := $(if $(findstring linux,$(TARGET)),linux,$(if $(findstring darwin,$(TARGET)),macos))
 ifeq ($(PLATFORM),)
 ifneq ($(MAKECMDGOALS),clean)
-$(error unsupported build target '$(TARGET)': dramtop builds on Linux only for now)
+$(error unsupported build target '$(TARGET)': dramtop builds on Linux and macOS)
 endif
 endif
 
+EXTRA_macos  := src/macos_metal.m
+CFLAGS_macos := -fobjc-arc
+LDLIBS_macos := -framework CoreFoundation -framework IOKit -framework Foundation -framework Metal
+override CFLAGS += $(CFLAGS_$(PLATFORM))
+override LDLIBS += $(LDLIBS_$(PLATFORM))
+
 HDRS     := src/dramtop.h
-PLAT_SRC := src/os_posix.c src/$(PLATFORM).c
+PLAT_SRC := src/os_posix.c src/$(PLATFORM).c $(EXTRA_$(PLATFORM))
 SRCS     := src/dramtop.c $(PLAT_SRC)
 
 TESTS       := tests/test_diagnose tests/test_output tests/test_cli
@@ -34,6 +40,7 @@ dramtop: $(SRCS) $(HDRS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(SRCS) -o $@ $(LDLIBS)
 
 static: $(SRCS) $(HDRS)
+	$(if $(filter linux,$(PLATFORM)),,$(error static binaries can only be built for Linux))
 	$(CC) $(CPPFLAGS) $(CFLAGS) -static $(LDFLAGS) $(SRCS) -o dramtop-static $(LDLIBS)
 	$(STRIP) dramtop-static
 

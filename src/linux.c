@@ -822,6 +822,8 @@ static void scan_procs(double now) {
 /* Backend interface                                                   */
 /* ------------------------------------------------------------------ */
 
+const char plat_name[] = "Linux";
+
 bool plat_init(const dt_config_t *cfg, dt_info_t *info) {
     g.cfg = *cfg;
     raise_fd_limit();
@@ -836,7 +838,7 @@ bool plat_init(const dt_config_t *cfg, dt_info_t *info) {
     cs_init(&g.probe);
     *info = (dt_info_t){
         .cpu_name = g.cpu_name, .backend = g.backend, .scope = "", .mode = "per-thread", .ncpus = g.ncpus,
-        .eff_cpus = g.eff_cpus, .has_quota = g.has_quota, .line = g.line, .has_split = g.has_split,
+        .eff_cpus = g.eff_cpus, .has_quota = g.has_quota, .line = g.line, .has_split = g.has_split, .has_cfs = true,
     };
     return true;
 }

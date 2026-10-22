@@ -18,7 +18,7 @@
 #include <time.h>
 
 #ifndef DRAMTOP_VERSION
-#define DRAMTOP_VERSION "1.1.1"
+#define DRAMTOP_VERSION "1.2.0"
 #endif
 
 #define RING_SIZE         64
@@ -54,6 +54,7 @@ static const struct {
     [ST_MEM_LAT]    = {"MEMORY-BOUND (DRAM Latency)",      GREEN},
     [ST_CONTENTION] = {"LOCK-CONTENTION / CFS-THROTTLED",  RED},
     [ST_COMPUTE]    = {"COMPUTE-BOUND (Cache-Resident)",   BLUE},
+    [ST_GPU]        = {"COMPUTE-BOUND (GPU)",              BLUE},
     [ST_ACTIVE]     = {"ACTIVE (Balanced Workload)",       YELLOW},
     [ST_OTHER]      = {"KERNEL / EPHEMERAL",               CYAN},
     [ST_NOACCESS]   = {"NO PMU ACCESS",                    GRAY},
@@ -63,6 +64,7 @@ typedef struct {
     char time[9];
     double ts;
     metrics_t m;
+    double agent_rd[MAX_AGENTS], agent_wr[MAX_AGENTS]; /* GB/s */
     char top[NAME_LEN];
     int top_pid;
     bool cfs_ok;
@@ -91,6 +93,7 @@ static struct {
     int nview, view_cap;
     double scan_ts;
     double peak, max_bw, sum_bw;
+    double cpu_cap; /* measured CPU read bandwidth when the spec sets the peak */
     long nsamples;
 } g;
 
@@ -99,6 +102,11 @@ static bool g_tui, g_color, g_quit;
 static const char *C(const char *esc) { return g_color ? esc : ""; }
 
 static bool stopping(void) { return g_quit || os_stop_requested(); }
+
+static const char *label_of(state_t s) {
+    if (s == ST_CONTENTION && !g.info.has_cfs) return "LOCK-CONTENTION";
+    return STATE[s].label;
+}
 
 /* ------------------------------------------------------------------ */
 /* Peak bandwidth calibration                                          */
@@ -159,11 +167,12 @@ static double calibrate(void) {
     size_t chunk = (size_t)(bytes / (unsigned long long)nt) & ~(size_t)4095;
     if (chunk < 4096 || (unsigned long long)chunk * (unsigned long long)nt < CAL_MIN_BYTES) return 0.0;
 
-    uint8_t *buf = os_alloc_aligned(4096, chunk * (size_t)nt);
+    size_t total = chunk * (size_t)nt;
+    uint8_t *buf = os_alloc_pages(total);
     if (!buf) return 0.0;
     cal_sync_t sync = {.mon = os_monitor_new(), .sweeps = 1};
     if (!sync.mon) {
-        os_free_aligned(buf);
+        os_free_pages(buf, total);
         return 0.0;
     }
 
@@ -213,7 +222,7 @@ static double calibrate(void) {
     os_monitor_free(sync.mon);
     free(jobs);
     free(th);
-    os_free_aligned(buf);
+    os_free_pages(buf, total);
     return best;
 }
 
@@ -226,9 +235,21 @@ static void compute_rates(metrics_t *m, const dt_counts_t *c, double dt) {
     m->total_gbs = c->total * scale;
     m->demand_gbs = c->demand * scale;
     m->prefetch_gbs = c->prefetch * scale;
+    m->read_gbs = c->read * scale;
+    m->write_gbs = c->write * scale;
     m->ipc = c->cycles > 0 ? c->insns / c->cycles : 0.0;
-    m->mpki = c->insns > 0 ? c->total * 1000.0 / c->insns : 0.0;
+    /* With GPU and other agents in the total, only the CPU clusters' reads relate to instructions. */
+    double misses = g.info.cpu_agents > 0 ? c->cpu_read : c->total;
+    m->mpki = c->insns > 0 ? misses * 1000.0 / c->insns : 0.0;
     m->has_bw = true;
+}
+
+/* Traffic of the CPU clusters and of the GPU in a sample, in GB/s. */
+static void agent_split(const sample_t *s, double *cpu, double *gpu) {
+    *cpu = *gpu = 0.0;
+    for (int a = 0; a < g.info.cpu_agents && a < g.info.nagents; a++) *cpu += s->agent_rd[a] + s->agent_wr[a];
+    if (g.info.gpu_agent >= 0 && g.info.gpu_agent < g.info.nagents)
+        *gpu = s->agent_rd[g.info.gpu_agent] + s->agent_wr[g.info.gpu_agent];
 }
 
 static double util_of(double gbs) {
@@ -240,9 +261,10 @@ static double util_of(double gbs) {
  * "Busy" means at least about one core of CPU time. */
 static state_t diagnose(const metrics_t *m, double throttle_ratio) {
     if (!m->has_bw) return m->cpu_pct >= 5.0 ? ST_SAMPLING : ST_IDLE;
-    if (m->total_gbs < 0.25 && m->cpu_pct < 5.0) return ST_IDLE;
+    if (m->total_gbs < 0.25 && m->cpu_pct < 5.0 && m->gpu_pct < 5.0) return ST_IDLE;
     if (m->util_pct >= 42.0) return ST_MEM_BW;
     if (throttle_ratio >= 0.25) return ST_CONTENTION;
+    if (m->gpu_pct >= 50.0) return ST_GPU;
     bool busy = m->cpu_pct >= 90.0;
     bool dram_stalls = m->mpki >= 10.0 || (m->mpki >= 3.0 && m->ipc > 0 && m->ipc < 0.5);
     if (busy && dram_stalls) return ST_MEM_LAT;
@@ -271,14 +293,31 @@ static void sample(sample_t *s, bool discard) {
         dt_proc_t *p = g.snap.procs[i];
         memset(&p->m, 0, sizeof p->m);
         p->m.cpu_pct = p->cpu_sec / dt * 100.0;
+        p->m.gpu_pct = p->gpu_sec / dt * 100.0;
+        p->m.cpu_power_w = p->energy_j / dt;
         cpu_total += p->m.cpu_pct;
         if (p->has_bw) compute_rates(&p->m, &p->c, p->bw_sec);
+        else if (p->has_ipc && p->c.cycles > 0) p->m.ipc = p->c.insns / p->c.cycles;
     }
 
     memset(s, 0, sizeof *s);
-    compute_rates(&s->m, &g.snap.sys, dt);
+    double bw_dt = g.snap.bw_sec > 0 ? g.snap.bw_sec : dt;
+    compute_rates(&s->m, &g.snap.sys, bw_dt);
     s->m.cpu_pct = cpu_total;
+    s->m.gpu_pct = g.snap.gpu_sec / dt * 100.0;
+    if (s->m.gpu_pct > 100.0) s->m.gpu_pct = 100.0; /* overlapping GPU work of several processes */
+    s->m.cpu_power_w = g.snap.energy_j / dt;
+    for (int a = 0; a < g.info.nagents; a++) {
+        s->agent_rd[a] = g.snap.agent[a].read * (double)g.info.line / bw_dt / 1e9;
+        s->agent_wr[a] = g.snap.agent[a].write * (double)g.info.line / bw_dt / 1e9;
+    }
     if (!discard && s->m.total_gbs > g.peak) g.peak = s->m.total_gbs;
+    if (!discard) { /* probes run on a busy machine come out low */
+        double cpu, gpu;
+        agent_split(s, &cpu, &gpu);
+        if (g.cpu_cap > 0 && cpu > g.cpu_cap) g.cpu_cap = cpu;
+        if (g.info.gpu_cap_gbs > 0 && gpu > g.info.gpu_cap_gbs) g.info.gpu_cap_gbs = gpu;
+    }
 
     double throttle = 0.0;
     if (g.snap.cfs_ok) {
@@ -306,14 +345,23 @@ static void sample(sample_t *s, bool discard) {
     if (g.snap.has_other) {
         memset(&g.other, 0, sizeof g.other);
         snprintf(g.other.name, sizeof g.other.name, "[kernel/ephem]");
-        compute_rates(&g.other.m, &g.snap.other, dt);
+        compute_rates(&g.other.m, &g.snap.other, bw_dt);
         g.other.m.util_pct = util_of(g.other.m.total_gbs);
         g.other.m.state = ST_OTHER;
         if (g.other.m.total_gbs >= 0.05) g.view[g.nview++] = &g.other;
     }
     qsort(g.view, (size_t)g.nview, sizeof *g.view, cmp_view);
 
-    if (g.nview && (g.view[0]->m.total_gbs >= 0.05 || g.view[0]->m.cpu_pct >= 1.0)) {
+    bool any_bw = false;
+    for (int i = 0; i < g.nview && !any_bw; i++) any_bw = g.view[i]->m.has_bw;
+    int top_agent = -1;
+    for (int a = 0; !any_bw && a < g.info.nagents; a++)
+        if (top_agent < 0 || s->agent_rd[a] + s->agent_wr[a] > s->agent_rd[top_agent] + s->agent_wr[top_agent])
+            top_agent = a;
+    if (top_agent >= 0) { /* without per-process traffic, name the busiest part of the chip instead */
+        snprintf(s->top, sizeof s->top, "%s",
+                 s->agent_rd[top_agent] + s->agent_wr[top_agent] >= 0.05 ? g.info.agent[top_agent] : "idle");
+    } else if (g.nview && (g.view[0]->m.total_gbs >= 0.05 || g.view[0]->m.cpu_pct >= 1.0)) {
         snprintf(s->top, sizeof s->top, "%s", g.view[0]->name);
         s->top_pid = g.view[0]->pid;
     } else {
@@ -373,10 +421,21 @@ DT_PRINTF(1, 2) static void out_line(const char *fmt, ...) {
     g_line++;
 }
 
+/* Estimated per-process traffic is marked '~' or '?' when other processes shared its CPU cluster or the GPU. */
+static char conf_mark(const dt_proc_t *p) {
+    if (!g.info.estimated || p == &g.other || !p->m.has_bw || p->confidence >= 0.75) return ' ';
+    return p->confidence >= 0.4 ? '~' : '?';
+}
+
 static void proc_header(void) {
     out_line("%s================================== [ TOP PROCESSES BY DRAM BANDWIDTH ] ===================================", C(CYAN));
-    out_line(" %s%-7s | %-15s | %-4s | %-11s | %-10s | %-11s | %-17s | %-6s | %-4s | %s%s", C(WHITE), "PID", "PROCESS",
-             "THR", "DRAM TOTAL", "DEMAND RD", "HW PREFETCH", "DRAM UTIL%", "CPU%", "IPC", "BOTTLENECK", C(RST));
+    if (g.info.has_rw)
+        out_line(" %s%-7s | %-15s | %-4s | %-12s | %-10s | %-11s | %-17s | %-6s | %-5s | %-4s | %s%s", C(WHITE), "PID",
+                 "PROCESS", "THR", g.info.estimated ? "DRAM (EST.)" : "DRAM TOTAL", "READ", "WRITE", "DRAM UTIL%", "CPU%",
+                 "GPU%", "IPC", "BOTTLENECK", C(RST));
+    else
+        out_line(" %s%-7s | %-15s | %-4s | %-11s | %-10s | %-11s | %-17s | %-6s | %-4s | %s%s", C(WHITE), "PID", "PROCESS",
+                 "THR", "DRAM TOTAL", "DEMAND RD", "HW PREFETCH", "DRAM UTIL%", "CPU%", "IPC", "BOTTLENECK", C(RST));
     out_line("%s", DASH);
 }
 
@@ -389,28 +448,57 @@ static void proc_row(const dt_proc_t *p) {
     }
     if (p->m.has_bw) snprintf(up, sizeof up, "%5.1f%%", p->m.util_pct);
     else snprintf(up, sizeof up, "%6s", "-");
+    if (g.info.has_rw) {
+        out_line(" %-7s | %-15.15s | %4s | %s%c | %s | %s | %s %s | %5.0f%% | %4.0f%% | %s | %s%s%s", pid, p->name, thr,
+                 fmt_bw(tot, sizeof tot, p->m.has_bw, p->m.total_gbs, 6), conf_mark(p),
+                 fmt_bw(dem, sizeof dem, p->m.has_bw, p->m.read_gbs, 5),
+                 fmt_bw(pf, sizeof pf, p->m.has_bw, p->m.write_gbs, 6), bar(ub, sizeof ub, p->m.util_pct, 8), up,
+                 p->m.cpu_pct, p->m.gpu_pct, fmt_ipc(ipc, sizeof ipc, p->m.ipc), C(STATE[p->m.state].color),
+                 label_of(p->m.state), C(RST));
+        return;
+    }
     out_line(" %-7s | %-15.15s | %4s | %s | %s | %s | %s %s | %5.0f%% | %s | %s%s%s", pid, p->name, thr,
              fmt_bw(tot, sizeof tot, p->m.has_bw, p->m.total_gbs, 6), fmt_bw(dem, sizeof dem, split, p->m.demand_gbs, 5),
              fmt_bw(pf, sizeof pf, split, p->m.prefetch_gbs, 6), bar(ub, sizeof ub, p->m.util_pct, 8), up,
-             p->m.cpu_pct, fmt_ipc(ipc, sizeof ipc, p->m.ipc), C(STATE[p->m.state].color), STATE[p->m.state].label,
+             p->m.cpu_pct, fmt_ipc(ipc, sizeof ipc, p->m.ipc), C(STATE[p->m.state].color), label_of(p->m.state),
              C(RST));
 }
 
+/* The timeline and the line output share their columns; the third, fourth and seventh depend on the platform. */
+static const char *const *timeline_titles(void) {
+    static const char *t[3];
+    t[0] = g.info.has_rw ? "READ" : "DEMAND RD";
+    t[1] = g.info.has_rw ? "WRITE" : "HW PREFETCH";
+    t[2] = g.info.has_gpu ? "GPU%" : "IPC";
+    return t;
+}
+
+static void timeline_cells(const sample_t *s, char c3[24], char c4[24], char c7[16]) {
+    if (g.info.has_rw) {
+        fmt_bw(c3, 24, true, s->m.read_gbs, 5);
+        fmt_bw(c4, 24, true, s->m.write_gbs, 6);
+    } else {
+        fmt_bw(c3, 24, g.info.has_split, s->m.demand_gbs, 5);
+        fmt_bw(c4, 24, g.info.has_split, s->m.prefetch_gbs, 6);
+    }
+    if (g.info.has_gpu) snprintf(c7, 16, "%3.0f%%", s->m.gpu_pct);
+    else fmt_ipc(c7, 16, s->m.ipc);
+}
+
 static void timeline_header(void) {
+    const char *const *t = timeline_titles();
     out_line("%s=================================== [ REAL-TIME ROLLING TIMELINE ] =======================================", C(CYAN));
     out_line(" %s%-8s | %-11s | %-10s | %-11s | %-17s | %-6s | %-4s | %-13s | %s%s", C(WHITE), "TIME", "DRAM TOTAL",
-             "DEMAND RD", "HW PREFETCH", "DRAM UTIL%", "CPU%", "IPC", "TOP PROCESS", "DIAGNOSIS", C(RST));
+             t[0], t[1], "DRAM UTIL%", "CPU%", t[2], "TOP PROCESS", "DIAGNOSIS", C(RST));
     out_line("%s", DASH);
 }
 
 static void timeline_row(const sample_t *s) {
-    char tot[24], dem[24], pf[24], ipc[16], ub[96];
+    char tot[24], c3[24], c4[24], c7[16], ub[96];
+    timeline_cells(s, c3, c4, c7);
     out_line(" %-8s | %s | %s | %s | %s %5.1f%% | %5.0f%% | %s | %-13.13s | %s%s%s", s->time,
-             fmt_bw(tot, sizeof tot, true, s->m.total_gbs, 6),
-             fmt_bw(dem, sizeof dem, g.info.has_split, s->m.demand_gbs, 5),
-             fmt_bw(pf, sizeof pf, g.info.has_split, s->m.prefetch_gbs, 6), bar(ub, sizeof ub, s->m.util_pct, 8),
-             s->m.util_pct, s->m.cpu_pct, fmt_ipc(ipc, sizeof ipc, s->m.ipc), s->top, C(STATE[s->m.state].color),
-             STATE[s->m.state].label, C(RST));
+             fmt_bw(tot, sizeof tot, true, s->m.total_gbs, 6), c3, c4, bar(ub, sizeof ub, s->m.util_pct, 8),
+             s->m.util_pct, s->m.cpu_pct, c7, s->top, C(STATE[s->m.state].color), label_of(s->m.state), C(RST));
 }
 
 static void render(const sample_t *ring, int count, int head, int view, bool paused) {
@@ -437,21 +525,45 @@ static void render(const sample_t *ring, int count, int head, int view, bool pau
     out_line(" %s%s%s: %s %s%6.2f GB/s%s (%5.1f%% of %.1f GB/s cap)", C(BOLD),
              filtered ? "Filter DRAM BW" : "System DRAM BW", C(RST), bar(b1, sizeof b1, cur->m.util_pct, 30), C(CYAN),
              cur->m.total_gbs, C(RST), cur->m.util_pct, g.peak);
+    double avg = g.nsamples ? g.sum_bw / (double)g.nsamples : 0.0;
     if (g.info.has_split)
         out_line("   ├─ Demand Rd: %s%6.2f GB/s%s   ├─ HW Prefetch: %s%6.2f GB/s%s   ├─ Session Max/Avg: %s%.2f%s / %s%.2f GB/s%s",
                  C(WHITE), cur->m.demand_gbs, C(RST), C(WHITE), cur->m.prefetch_gbs, C(RST), C(YELLOW), g.max_bw, C(RST),
-                 C(GREEN), g.nsamples ? g.sum_bw / (double)g.nsamples : 0.0, C(RST));
+                 C(GREEN), avg, C(RST));
+    else if (g.info.has_rw)
+        out_line("   ├─ Read: %s%6.2f GB/s%s   ├─ Write: %s%6.2f GB/s%s   ├─ Session Max/Avg: %s%.2f%s / %s%.2f GB/s%s",
+                 C(WHITE), cur->m.read_gbs, C(RST), C(WHITE), cur->m.write_gbs, C(RST), C(YELLOW), g.max_bw, C(RST),
+                 C(GREEN), avg, C(RST));
     else
         out_line("   ├─ Demand/Prefetch split: n/a on this CPU   ├─ Session Max/Avg: %s%.2f%s / %s%.2f GB/s%s",
-                 C(YELLOW), g.max_bw, C(RST), C(GREEN), g.nsamples ? g.sum_bw / (double)g.nsamples : 0.0, C(RST));
-    out_line(" %s%s%s: %s %s%6.0f%%%s     (IPC %s | MPKI %.1f | Throttled %s)", C(BOLD),
-             g.info.has_quota ? "CPU Quota Util" : "CPU Util      ", C(RST),
-             bar(b2, sizeof b2, cur->m.cpu_pct / g.info.eff_cpus, 30), C(WHITE), cur->m.cpu_pct, C(RST),
-             fmt_ipc(ipc, sizeof ipc, cur->m.ipc), cur->m.mpki, thr);
+                 C(YELLOW), g.max_bw, C(RST), C(GREEN), avg, C(RST));
+    if (g.info.nagents > 0) {
+        char line[320], caps[96] = "";
+        int k = 0;
+        for (int a = 0; a < g.info.nagents && k < (int)sizeof line - 48; a++)
+            k += snprintf(line + k, sizeof line - (size_t)k, "%s%s %s%.1f%s", a ? "  " : "", g.info.agent[a], C(WHITE),
+                          cur->agent_rd[a] + cur->agent_wr[a], C(RST));
+        double cpu, gpu;
+        agent_split(cur, &cpu, &gpu);
+        if (g.cpu_cap > 0 && g.info.gpu_cap_gbs > 0)
+            snprintf(caps, sizeof caps, "  |  CPU %.0f%%, GPU %.0f%% of measured caps", cpu / g.cpu_cap * 100.0,
+                     gpu / g.info.gpu_cap_gbs * 100.0);
+        out_line("   ├─ %s  (GB/s)%s", line, caps);
+    }
+    if (g.info.has_gpu)
+        out_line(" %s%s%s: %s %s%6.0f%%%s     (IPC %s | MPKI %.1f | GPU %.0f%% | CPU Power %.1f W)", C(BOLD),
+                 "CPU Util      ", C(RST), bar(b2, sizeof b2, cur->m.cpu_pct / g.info.eff_cpus, 30), C(WHITE),
+                 cur->m.cpu_pct, C(RST), fmt_ipc(ipc, sizeof ipc, cur->m.ipc), cur->m.mpki, cur->m.gpu_pct,
+                 cur->m.cpu_power_w);
+    else
+        out_line(" %s%s%s: %s %s%6.0f%%%s     (IPC %s | MPKI %.1f | Throttled %s)", C(BOLD),
+                 g.info.has_quota ? "CPU Quota Util" : "CPU Util      ", C(RST),
+                 bar(b2, sizeof b2, cur->m.cpu_pct / g.info.eff_cpus, 30), C(WHITE), cur->m.cpu_pct, C(RST),
+                 fmt_ipc(ipc, sizeof ipc, cur->m.ipc), cur->m.mpki, thr);
     out_line(" %sLive Diagnosis%s: %s%s%s  (Top Bandwidth Consumer: %s%s%s)", C(BOLD), C(RST),
-             C(STATE[cur->m.state].color), STATE[cur->m.state].label, C(RST), C(YELLOW), cur->top, C(RST));
+             C(STATE[cur->m.state].color), label_of(cur->m.state), C(RST), C(YELLOW), cur->top, C(RST));
 
-    int body = g_rows - 11, np = 0, nh = 0;
+    int body = g_rows - 11 - (g.info.nagents > 0), np = 0, nh = 0;
     if (view == VIEW_SPLIT) {
         int data = body - 6 < 2 ? 2 : body - 6;
         np = (data + 1) / 2;
@@ -489,23 +601,25 @@ static void print_batch_header(void) {
     printf("%s\n", RULE);
     printf("dramtop v%s | CPU: %s (%s)\n", DRAMTOP_VERSION, g.info.cpu_name, budget);
     printf("PMU Backend   : %s\n", g.info.backend);
-    printf("Monitor Scope : %s (%d procs) | DRAM cap: %.1f GB/s (%s)\n", g.scope, g.snap.nprocs, g.peak,
-           g.o.ceiling > 0 ? "manual" : "calibrated");
+    printf("Monitor Scope : %s (%d procs) | DRAM cap: %.1f GB/s (%s)", g.scope, g.snap.nprocs, g.peak,
+           g.o.ceiling > 0 ? "manual" : g.info.spec_gbs > 0 ? "spec" : "calibrated");
+    if (g.cpu_cap > 0 && g.info.gpu_cap_gbs > 0)
+        printf(" | measured CPU %.1f, GPU %.1f GB/s", g.cpu_cap, g.info.gpu_cap_gbs);
+    printf("\n");
     printf("%s\n", RULE);
-    printf("%-8s | %-11s | %-10s | %-11s | %-17s | %-6s | %-4s | %-13s | %s\n", "TIME", "DRAM TOTAL", "DEMAND RD",
-           "HW PREFETCH", "DRAM UTIL%", "CPU%", "IPC", "TOP PROCESS", "DIAGNOSIS");
+    const char *const *t = timeline_titles();
+    printf("%-8s | %-11s | %-10s | %-11s | %-17s | %-6s | %-4s | %-13s | %s\n", "TIME", "DRAM TOTAL", t[0], t[1],
+           "DRAM UTIL%", "CPU%", t[2], "TOP PROCESS", "DIAGNOSIS");
     printf("%s\n", DASH);
     fflush(stdout);
 }
 
 static void print_batch(const sample_t *s) {
-    char tot[24], dem[24], pf[24], ipc[16], ub[96];
+    char tot[24], c3[24], c4[24], c7[16], ub[96];
+    timeline_cells(s, c3, c4, c7);
     printf("%-8s | %s | %s | %s | %s %5.1f%% | %5.0f%% | %s | %-13.13s | %s%s%s\n", s->time,
-           fmt_bw(tot, sizeof tot, true, s->m.total_gbs, 6),
-           fmt_bw(dem, sizeof dem, g.info.has_split, s->m.demand_gbs, 5),
-           fmt_bw(pf, sizeof pf, g.info.has_split, s->m.prefetch_gbs, 6), bar(ub, sizeof ub, s->m.util_pct, 8),
-           s->m.util_pct, s->m.cpu_pct, fmt_ipc(ipc, sizeof ipc, s->m.ipc), s->top, C(STATE[s->m.state].color),
-           STATE[s->m.state].label, C(RST));
+           fmt_bw(tot, sizeof tot, true, s->m.total_gbs, 6), c3, c4, bar(ub, sizeof ub, s->m.util_pct, 8),
+           s->m.util_pct, s->m.cpu_pct, c7, s->top, C(STATE[s->m.state].color), label_of(s->m.state), C(RST));
     fflush(stdout);
 }
 
@@ -528,13 +642,28 @@ static void print_json(const sample_t *s) {
            g.info.mode, s->m.total_gbs);
     json_bw("demand_bw_gbs", g.info.has_split, s->m.demand_gbs);
     json_bw("prefetch_bw_gbs", g.info.has_split, s->m.prefetch_gbs);
-    printf("\"peak_cap_gbs\":%.2f,\"util_pct\":%.2f,\"cpu_pct\":%.1f,\"ipc\":%.3f,\"mpki\":%.2f,", g.peak,
-           s->m.util_pct, s->m.cpu_pct, s->m.ipc, s->m.mpki);
+    if (g.info.has_rw) {
+        json_bw("read_bw_gbs", true, s->m.read_gbs);
+        json_bw("write_bw_gbs", true, s->m.write_gbs);
+    }
+    if (g.info.nagents > 0) {
+        printf("\"agents\":{");
+        for (int a = 0; a < g.info.nagents; a++)
+            printf("%s\"%s\":{\"read_bw_gbs\":%.3f,\"write_bw_gbs\":%.3f}", a ? "," : "", g.info.agent[a], s->agent_rd[a],
+                   s->agent_wr[a]);
+        printf("},");
+    }
+    printf("\"peak_cap_gbs\":%.2f,", g.peak);
+    if (g.cpu_cap > 0 && g.info.gpu_cap_gbs > 0)
+        printf("\"measured_caps\":{\"cpu_gbs\":%.2f,\"gpu_gbs\":%.2f},", g.cpu_cap, g.info.gpu_cap_gbs);
+    printf("\"util_pct\":%.2f,\"cpu_pct\":%.1f,", s->m.util_pct, s->m.cpu_pct);
+    if (g.info.has_gpu) printf("\"gpu_pct\":%.1f,\"cpu_power_w\":%.2f,", s->m.gpu_pct, s->m.cpu_power_w);
+    printf("\"ipc\":%.3f,\"mpki\":%.2f,", s->m.ipc, s->m.mpki);
     if (s->cfs_ok) printf("\"throttled\":%lld,\"periods\":%lld,", s->d_throttled, s->d_periods);
     else printf("\"throttled\":null,\"periods\":null,");
     printf("\"top_process\":");
     json_str(stdout, s->top);
-    printf(",\"top_pid\":%d,\"diagnosis\":\"%s\"},\"top_processes\":[", s->top_pid, STATE[s->m.state].label);
+    printf(",\"top_pid\":%d,\"diagnosis\":\"%s\"},\"top_processes\":[", s->top_pid, label_of(s->m.state));
     int n = g.nview < JSON_TOP_PROCS ? g.nview : JSON_TOP_PROCS;
     for (int i = 0; i < n; i++) {
         const dt_proc_t *p = g.view[i];
@@ -545,8 +674,18 @@ static void print_json(const sample_t *s) {
         json_bw("total_bw_gbs", p->m.has_bw, p->m.total_gbs);
         json_bw("demand_bw_gbs", split, p->m.demand_gbs);
         json_bw("prefetch_bw_gbs", split, p->m.prefetch_gbs);
-        printf("\"util_pct\":%.2f,\"cpu_pct\":%.1f,\"ipc\":%.3f,\"diagnosis\":\"%s\"}", p->m.util_pct, p->m.cpu_pct,
-               p->m.ipc, STATE[p->m.state].label);
+        if (g.info.has_rw) {
+            json_bw("read_bw_gbs", p->m.has_bw, p->m.read_gbs);
+            json_bw("write_bw_gbs", p->m.has_bw, p->m.write_gbs);
+        }
+        printf("\"util_pct\":%.2f,\"cpu_pct\":%.1f,", p->m.util_pct, p->m.cpu_pct);
+        if (g.info.has_gpu) printf("\"gpu_pct\":%.1f,\"cpu_power_w\":%.2f,", p->m.gpu_pct, p->m.cpu_power_w);
+        printf("\"ipc\":%.3f,", p->m.ipc);
+        if (g.info.estimated) {
+            printf("\"estimated\":true,");
+            json_bw("confidence", p->m.has_bw && p != &g.other, p->confidence);
+        }
+        printf("\"diagnosis\":\"%s\"}", label_of(p->m.state));
     }
     printf("]}\n");
     fflush(stdout);
@@ -621,7 +760,7 @@ static double step_interval(double cur, int dir) {
 
 static void usage(FILE *out) {
     fprintf(out,
-            "dramtop v%s - real-time DRAM bandwidth monitor for Linux\n\n"
+            "dramtop v%s - real-time DRAM bandwidth monitor for %s\n\n"
             "Usage: dramtop [options]\n\n"
             "Options:\n"
             "  -p, --pid <PID>        Monitor a single process (and children it forks)\n"
@@ -636,7 +775,7 @@ static void usage(FILE *out) {
             "  -h, --help             Show this help\n\n"
             "Colors are also disabled when NO_COLOR is set or output is not a terminal.\n"
             "If TERM is unset or \"dumb\", line output is used instead of the full-screen TUI.\n",
-            DRAMTOP_VERSION);
+            DRAMTOP_VERSION, plat_name);
 }
 
 enum { ARGS_OK, ARGS_HELP, ARGS_VERSION, ARGS_ERROR };
@@ -803,7 +942,8 @@ int main(int argc, char **argv) {
     g_color = om.color;
 
     os_signals_init();
-    dt_config_t cfg = {g.o.filter_pid, g.o.filter_name};
+    bool measure = g.o.ceiling <= 0;
+    dt_config_t cfg = {g.o.filter_pid, g.o.filter_name, measure};
     if (!plat_init(&cfg, &g.info)) return 1;
 
     plat_scan(os_now()); /* CPU-time baseline; the calibration below doubles as the activity window */
@@ -813,16 +953,18 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (g.o.ceiling > 0) {
+    if (measure && om.tell) fputs("dramtop: measuring peak DRAM bandwidth (skip with -c <GB/s>)...", stderr);
+    double measured = measure ? calibrate() : 0.0;
+    plat_start_system(&g.info); /* runs the backend's own probes when asked to, before its system-wide counters */
+    if (measure && om.tell) fputs("\r\033[K", stderr);
+    if (!measure) {
         g.peak = g.o.ceiling;
+    } else if (g.info.spec_gbs > 0) { /* the CPU alone falls well short of the chip's rated bandwidth */
+        g.peak = g.info.spec_gbs;
+        g.cpu_cap = measured;
     } else {
-        if (om.tell) fputs("dramtop: measuring peak DRAM bandwidth (skip with -c <GB/s>)...", stderr);
-        g.peak = calibrate();
-        if (om.tell) fputs("\r\033[K", stderr);
-        if (g.peak <= 0) g.peak = 100.0;
+        g.peak = measured > 0 ? measured : 100.0;
     }
-
-    plat_start_system(&g.info);
     if (g.o.filter_pid > 0) snprintf(g.scope, sizeof g.scope, "PID %d", g.o.filter_pid);
     else if (g.o.filter_name) snprintf(g.scope, sizeof g.scope, "Process filter '%.40s'", g.o.filter_name);
     else snprintf(g.scope, sizeof g.scope, "%s", g.info.scope);

@@ -2,8 +2,8 @@
  * dramtop - real-time DRAM bandwidth monitor
  *
  * Types shared by all source files and the two platform interfaces:
- *   - the collection backend (linux.c): CPU detection, process tracking and
- *     hardware counters;
+ *   - the collection backend (linux.c, macos.c): CPU detection, process
+ *     tracking and hardware counters;
  *   - the system layer (os_posix.c): time, threads, terminal and signals.
  * dramtop.c holds everything else and uses only standard C.
  *
@@ -26,23 +26,25 @@
 #define DT_PRINTF(fmt, first)
 #endif
 
-#define NAME_LEN 48
+#define NAME_LEN   48
+#define MAX_AGENTS 8
 
 typedef enum {
     ST_SAMPLING, ST_IDLE, ST_MEM_BW, ST_MEM_LAT, ST_CONTENTION,
-    ST_COMPUTE, ST_ACTIVE, ST_OTHER, ST_NOACCESS
+    ST_COMPUTE, ST_GPU, ST_ACTIVE, ST_OTHER, ST_NOACCESS
 } state_t;
 
 typedef struct {
-    double total_gbs, demand_gbs, prefetch_gbs;
-    double util_pct, cpu_pct, ipc, mpki;
+    double total_gbs, demand_gbs, prefetch_gbs, read_gbs, write_gbs;
+    double util_pct, cpu_pct, gpu_pct, cpu_power_w, ipc, mpki;
     bool has_bw;
     state_t state;
 } metrics_t;
 
 /* Counter totals over one interval. DRAM traffic is in cache lines. */
 typedef struct {
-    double total, demand, prefetch;
+    double total, demand, prefetch, read, write;
+    double cpu_read; /* lines read for the CPU clusters, which MPKI counts when the chip has agents */
     double cycles, insns;
 } dt_counts_t;
 
@@ -51,10 +53,14 @@ typedef struct {
     int pid;
     char name[NAME_LEN];
     int threads;
-    double cpu_sec; /* CPU time used during the last scan interval */
-    bool has_bw;    /* c holds counts over the last bw_sec seconds */
-    bool denied;    /* no permission to count this process */
+    double cpu_sec;    /* CPU time used during the last scan interval */
+    double gpu_sec;    /* GPU time, likewise */
+    double energy_j;   /* CPU energy, likewise */
+    bool has_bw;       /* c holds counts over the last bw_sec seconds */
+    bool has_ipc;      /* c.cycles and c.insns are valid even without has_bw */
+    bool denied;       /* no permission to count this process */
     double bw_sec;
+    double confidence; /* for estimated traffic: 1 when the process had its CPU cluster or the GPU to itself */
     dt_counts_t c;
     metrics_t m;
 } dt_proc_t;
@@ -62,6 +68,7 @@ typedef struct {
 typedef struct {
     int filter_pid;          /* 0: every process */
     const char *filter_name; /* NULL: no name filter */
+    bool measure_caps;       /* probe what each part of the chip can reach (skipped with -c) */
 } dt_config_t;
 
 typedef struct {
@@ -74,12 +81,30 @@ typedef struct {
     bool has_quota;      /* eff_cpus comes from a cgroup CPU quota */
     unsigned line;       /* cache line size in bytes */
     bool has_split;      /* demand reads and prefetch fills are counted separately */
+    bool has_rw;         /* DRAM reads and writes are counted separately */
+    bool has_cfs;        /* cgroup CPU throttling is tracked */
+    bool has_gpu;        /* per-process GPU time and CPU energy are reported */
+    bool estimated;      /* per-process traffic is apportioned, not counted */
+    double spec_gbs;     /* DRAM bandwidth of the chip's specification, 0 if unknown */
+    double gpu_cap_gbs;  /* measured GPU streaming bandwidth, 0 if not measured */
+    int nagents;         /* parts of the chip with their own exact DRAM counters */
+    const char *agent[MAX_AGENTS];
+    int cpu_agents;      /* agent[0 .. cpu_agents-1] are CPU clusters */
+    int gpu_agent;       /* index of the GPU in agent[], or -1 */
 } dt_info_t;
+
+typedef struct {
+    double read, write; /* cache lines */
+} dt_rw_t;
 
 typedef struct {
     dt_counts_t sys;   /* everything counted in the monitored scope */
     dt_counts_t other; /* the part of sys that no listed process accounts for */
     bool has_other;
+    double bw_sec;     /* seconds that sys, other and agent cover; 0: the sampling interval */
+    dt_rw_t agent[MAX_AGENTS];
+    double gpu_sec;    /* GPU time of all processes */
+    double energy_j;   /* CPU energy of all processes */
     dt_proc_t **procs;
     int nprocs;
     bool fd_limited; /* the open file limit kept counters from being attached */
@@ -89,6 +114,7 @@ typedef struct {
 
 /* ---- Collection backend ---- */
 
+extern const char plat_name[]; /* "Linux", "macOS" */
 bool plat_init(const dt_config_t *cfg, dt_info_t *info); /* prints why and returns false on failure */
 void plat_scan(double now);                               /* process list and CPU time baseline */
 bool plat_has_proc(int pid);
@@ -108,8 +134,8 @@ void plat_probe_end(void);
 
 double os_now(void); /* monotonic seconds */
 void os_sleep(double sec);
-void *os_alloc_aligned(size_t align, size_t size);
-void os_free_aligned(void *p);
+void *os_alloc_pages(size_t size); /* page-aligned and taken from the OS, so freeing returns it at once */
+void os_free_pages(void *p, size_t size);
 
 typedef struct os_thread os_thread_t;
 os_thread_t *os_thread_start(void (*fn)(void *), void *arg); /* NULL on failure */

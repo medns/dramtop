@@ -23,6 +23,11 @@ static void test_rates(void) {
     CHECK_NEAR(m.ipc, 1.5, 1e-12);
     CHECK_NEAR(m.mpki, 1e9 * 1000.0 / 3e9, 1e-9);
 
+    dt_counts_t rw = {.total = 5e8, .read = 4e8, .write = 1e8};
+    compute_rates(&m, &rw, 1.0);
+    CHECK_NEAR(m.read_gbs, 25.6, 1e-9);
+    CHECK_NEAR(m.write_gbs, 6.4, 1e-9);
+
     dt_counts_t none = {0};
     compute_rates(&m, &none, 1.0);
     CHECK_NEAR(m.ipc, 0.0, 0.0);
@@ -77,8 +82,32 @@ static void test_rules(void) {
     CHECK_STR(STATE[ST_NOACCESS].label, "NO PMU ACCESS");
 }
 
+static void test_gpu(void) {
+    g.peak = 100.0;
+    g.info.eff_cpus = 8;
+
+    metrics_t m = measured(10.0, 5.0, 1.0, 1.0);
+    m.gpu_pct = 60.0;
+    CHECK_INT(diagnose(&m, 0), ST_GPU);
+    m = measured(50.0, 5.0, 1.0, 1.0); /* saturated DRAM takes precedence */
+    m.gpu_pct = 90.0;
+    CHECK_INT(diagnose(&m, 0), ST_MEM_BW);
+    m = measured(0.1, 2.0, 1.0, 1.0); /* a little GPU work keeps a process from looking idle */
+    m.gpu_pct = 10.0;
+    CHECK_INT(diagnose(&m, 0), ST_ACTIVE);
+    m.gpu_pct = 3.0;
+    CHECK_INT(diagnose(&m, 0), ST_IDLE);
+
+    g.info.has_cfs = true;
+    CHECK_STR(label_of(ST_CONTENTION), "LOCK-CONTENTION / CFS-THROTTLED");
+    g.info.has_cfs = false; /* no cgroups on macOS */
+    CHECK_STR(label_of(ST_CONTENTION), "LOCK-CONTENTION");
+    CHECK_STR(label_of(ST_GPU), "COMPUTE-BOUND (GPU)");
+}
+
 int main(void) {
     test_rates();
     test_rules();
+    test_gpu();
     return check_done("test_diagnose");
 }

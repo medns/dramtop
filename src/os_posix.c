@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -30,12 +31,14 @@ void os_sleep(double sec) {
     nanosleep(&ts, NULL);
 }
 
-void *os_alloc_aligned(size_t align, size_t size) {
-    void *p = NULL;
-    return posix_memalign(&p, align, size) ? NULL : p;
+void *os_alloc_pages(size_t size) {
+    void *p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    return p == MAP_FAILED ? NULL : p;
 }
 
-void os_free_aligned(void *p) { free(p); }
+void os_free_pages(void *p, size_t size) {
+    if (p) munmap(p, size);
+}
 
 /* ------------------------------------------------------------------ */
 /* Threads                                                             */
@@ -219,10 +222,15 @@ static void install_handler(int sig) {
     sigaction(sig, &sa, NULL);
 }
 
+/* Every way of being stopped ends the main loop, so the backend can release what it holds;
+ * on macOS that includes kernel-wide counter and tracing settings. SIGPIPE comes when the
+ * reader of the output, such as `head`, goes away. */
 void os_signals_init(void) {
     install_handler(SIGINT);
     install_handler(SIGTERM);
     install_handler(SIGHUP);
+    install_handler(SIGQUIT);
+    install_handler(SIGPIPE);
     install_handler(SIGWINCH);
 }
 
