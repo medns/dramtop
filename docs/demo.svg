@@ -1,34 +1,56 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1110 528" width="1110" height="528">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1190 528" width="1190" height="528">
 <defs><style>
 .bg{fill:#0d1117;stroke:#30363d;stroke-width:1.5}.bar{fill:#161b22}
 .t{font-family:'JetBrains Mono','Fira Code','SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:12.4px;fill:#c9d1d9;white-space:pre}
 .white{fill:#f0f6fc;font-weight:700}.cyan{fill:#39c5cf;font-weight:700}.yellow{fill:#e3b341;font-weight:700}.green{fill:#3fb950;font-weight:700}
 .red{fill:#ff7b72;font-weight:700}.blue{fill:#58a6ff;font-weight:700}.purple{fill:#d2a8ff;font-weight:700}.gray{fill:#8b949e}
-.f0{opacity:0;animation:a0 6.4s steps(1,end) infinite}
-@keyframes a0{0%{opacity:1}12.50%{opacity:0}100%{opacity:0}}
-.f1{opacity:0;animation:a1 6.4s steps(1,end) infinite}
-@keyframes a1{0%{opacity:0}12.50%{opacity:1}25.00%{opacity:0}100%{opacity:0}}
-.f2{opacity:0;animation:a2 6.4s steps(1,end) infinite}
-@keyframes a2{0%{opacity:0}25.00%{opacity:1}37.50%{opacity:0}100%{opacity:0}}
-.f3{opacity:0;animation:a3 6.4s steps(1,end) infinite}
-@keyframes a3{0%{opacity:0}37.50%{opacity:1}50.00%{opacity:0}100%{opacity:0}}
-.f4{opacity:0;animation:a4 6.4s steps(1,end) infinite}
-@keyframes a4{0%{opacity:0}50.00%{opacity:1}62.50%{opacity:0}100%{opacity:0}}
-.f5{opacity:0;animation:a5 6.4s steps(1,end) infinite}
-@keyframes a5{0%{opacity:0}62.50%{opacity:1}75.00%{opacity:0}100%{opacity:0}}
-.f6{opacity:0;animation:a6 6.4s steps(1,end) infinite}
-@keyframes a6{0%{opacity:0}75.00%{opacity:1}87.50%{opacity:0}100%{opacity:0}}
-.f7{opacity:0;animation:a7 6.4s steps(1,end) infinite}
-@keyframes a7{0%{opacity:0}87.50%{opacity:1}100.00%{opacity:0}100%{opacity:0}}
+.f0{opacity:0;animation:a0 12.8s steps(1,end) infinite}
+@keyframes a0{0%{opacity:1}6.25%{opacity:0}100%{opacity:0}}
+.f1{opacity:0;animation:a1 12.8s steps(1,end) infinite}
+@keyframes a1{0%{opacity:0}6.25%{opacity:1}12.50%{opacity:0}100%{opacity:0}}
+.f2{opacity:0;animation:a2 12.8s steps(1,end) infinite}
+@keyframes a2{0%{opacity:0}12.50%{opacity:1}18.75%{opacity:0}100%{opacity:0}}
+.f3{opacity:0;animation:a3 12.8s steps(1,end) infinite}
+@keyframes a3{0%{opacity:0}18.75%{opacity:1}25.00%{opacity:0}100%{opacity:0}}
+.f4{opacity:0;animation:a4 12.8s steps(1,end) infinite}
+@keyframes a4{0%{opacity:0}25.00%{opacity:1}31.25%{opacity:0}100%{opacity:0}}
+.f5{opacity:0;animation:a5 12.8s steps(1,end) infinite}
+@keyframes a5{0%{opacity:0}31.25%{opacity:1}37.50%{opacity:0}100%{opacity:0}}
+.f6{opacity:0;animation:a6 12.8s steps(1,end) infinite}
+@keyframes a6{0%{opacity:0}37.50%{opacity:1}43.75%{opacity:0}100%{opacity:0}}
+.f7{opacity:0;animation:a7 12.8s steps(1,end) infinite}
+@keyframes a7{0%{opacity:0}43.75%{opacity:1}50.00%{opacity:0}100%{opacity:0}}
+.f8{opacity:0;animation:a8 12.8s steps(1,end) infinite}
+@keyframes a8{0%{opacity:0}50.00%{opacity:1}56.25%{opacity:0}100%{opacity:0}}
+.f9{opacity:0;animation:a9 12.8s steps(1,end) infinite}
+@keyframes a9{0%{opacity:0}56.25%{opacity:1}62.50%{opacity:0}100%{opacity:0}}
+.f10{opacity:0;animation:a10 12.8s steps(1,end) infinite}
+@keyframes a10{0%{opacity:0}62.50%{opacity:1}68.75%{opacity:0}100%{opacity:0}}
+.f11{opacity:0;animation:a11 12.8s steps(1,end) infinite}
+@keyframes a11{0%{opacity:0}68.75%{opacity:1}75.00%{opacity:0}100%{opacity:0}}
+.f12{opacity:0;animation:a12 12.8s steps(1,end) infinite}
+@keyframes a12{0%{opacity:0}75.00%{opacity:1}81.25%{opacity:0}100%{opacity:0}}
+.f13{opacity:0;animation:a13 12.8s steps(1,end) infinite}
+@keyframes a13{0%{opacity:0}81.25%{opacity:1}87.50%{opacity:0}100%{opacity:0}}
+.f14{opacity:0;animation:a14 12.8s steps(1,end) infinite}
+@keyframes a14{0%{opacity:0}87.50%{opacity:1}93.75%{opacity:0}100%{opacity:0}}
+.f15{opacity:0;animation:a15 12.8s steps(1,end) infinite}
+@keyframes a15{0%{opacity:0}93.75%{opacity:1}100.00%{opacity:0}100%{opacity:0}}
+.s0{opacity:0;animation:b0 12.8s steps(1,end) infinite}
+@keyframes b0{0%{opacity:1}50.00%{opacity:0}100%{opacity:0}}
+.s1{opacity:0;animation:b1 12.8s steps(1,end) infinite}
+@keyframes b1{0%{opacity:0}50.00%{opacity:1}100%{opacity:0}}
 </style>
-<clipPath id="w"><rect width="1110" height="528" rx="10"/></clipPath></defs>
+<clipPath id="w"><rect width="1190" height="528" rx="10"/></clipPath></defs>
 <g clip-path="url(#w)">
-<rect class="bg" width="1110" height="528" rx="10"/>
-<rect class="bar" width="1110" height="34"/>
+<rect class="bg" width="1190" height="528" rx="10"/>
+<rect class="bar" width="1190" height="34"/>
 <circle cx="20" cy="17" r="6" fill="#ff5f56"/><circle cx="40" cy="17" r="6" fill="#ffbd2e"/><circle cx="60" cy="17" r="6" fill="#27c93f"/>
-<text x="555" y="22" text-anchor="middle" class="t gray">root@epyc-server: ~ &#8212; dramtop</text>
+<g class="s0">
+<text x="595" y="22" text-anchor="middle" class="t gray">root@epyc-server: ~ &#8212; dramtop</text>
+<text x="1172" y="22" text-anchor="end" class="t gray">Linux</text>
 <text x="18" y="56" class="t" xml:space="preserve"><tspan class="cyan">==========================================================================================================</tspan></text>
-<text x="18" y="74" class="t" xml:space="preserve"><tspan class="white"> dramtop v1.1.0</tspan>  |  CPU: <tspan class="yellow">AMD EPYC 9754 128-Core Processor</tspan> (Quota: 32.0 cores / 64 logical)</text>
+<text x="18" y="74" class="t" xml:space="preserve"><tspan class="white"> dramtop v1.2.0</tspan>  |  CPU: <tspan class="yellow">AMD EPYC 9754 128-Core Processor</tspan> (Quota: 32.0 cores / 64 logical)</text>
 <text x="18" y="92" class="t" xml:space="preserve"> PMU Backend   : AMD Zen PMU (demand + L1/L2 HW prefetch DRAM fills)</text>
 <text x="18" y="110" class="t" xml:space="preserve"> Monitor Scope : <tspan class="green">Per-CPU System PMU (pid=-1, 64 CPUs, Kernel+User)</tspan> (18 procs)  |  Refresh: 1.00s  |  View: <tspan class="purple">Split</tspan></text>
 <text x="18" y="128" class="t" xml:space="preserve"><tspan class="cyan">----------------------------------------------------------------------------------------------------------</tspan></text>
@@ -40,6 +62,24 @@
 <text x="18" y="380" class="t" xml:space="preserve">----------------------------------------------------------------------------------------------------------</text>
 <text x="18" y="488" class="t" xml:space="preserve"><tspan class="cyan">----------------------------------------------------------------------------------------------------------</tspan></text>
 <text x="18" y="506" class="t" xml:space="preserve"> Keys: [<tspan class="yellow">q</tspan>] Quit  [<tspan class="yellow">t</tspan>] View  [<tspan class="yellow">Space</tspan>] Pause  [<tspan class="yellow">r</tspan>] Reset  [<tspan class="yellow">+</tspan>/<tspan class="yellow">-</tspan>] Interval  (-b batch, -J json)</text>
+</g>
+<g class="s1">
+<text x="595" y="22" text-anchor="middle" class="t gray">dev@macbook-air: ~ &#8212; sudo dramtop</text>
+<text x="1172" y="22" text-anchor="end" class="t gray">macOS</text>
+<text x="18" y="56" class="t" xml:space="preserve"><tspan class="cyan">==========================================================================================================</tspan></text>
+<text x="18" y="74" class="t" xml:space="preserve"><tspan class="white"> dramtop v1.2.0</tspan>  |  CPU: <tspan class="yellow">Apple M2 (4P+4E, 10-core GPU)</tspan> (8 logical CPUs)</text>
+<text x="18" y="92" class="t" xml:space="preserve"> PMU Backend   : Apple memory controller counters (processes: estimated)</text>
+<text x="18" y="110" class="t" xml:space="preserve"> Monitor Scope : <tspan class="green">Whole chip (AMC)</tspan> (487 procs)  |  Refresh: 1.00s  |  View: <tspan class="purple">Split</tspan></text>
+<text x="18" y="128" class="t" xml:space="preserve"><tspan class="cyan">----------------------------------------------------------------------------------------------------------</tspan></text>
+<text x="18" y="236" class="t" xml:space="preserve"><tspan class="cyan">================================== [ TOP PROCESSES BY DRAM BANDWIDTH ] ===================================</tspan></text>
+<text x="18" y="254" class="t" xml:space="preserve"><tspan class="white"> PID     | PROCESS         | THR  | DRAM (EST.)  | READ       | WRITE       | DRAM UTIL%        | CPU%   | GPU%  | IPC  | BOTTLENECK</tspan></text>
+<text x="18" y="272" class="t" xml:space="preserve">----------------------------------------------------------------------------------------------------------</text>
+<text x="18" y="362" class="t" xml:space="preserve"><tspan class="cyan">=================================== [ REAL-TIME ROLLING TIMELINE ] =======================================</tspan></text>
+<text x="18" y="380" class="t" xml:space="preserve"><tspan class="white"> TIME     | DRAM TOTAL  | READ       | WRITE       | DRAM UTIL%        | CPU%   | GPU% | TOP PROCESS   | DIAGNOSIS</tspan></text>
+<text x="18" y="398" class="t" xml:space="preserve">----------------------------------------------------------------------------------------------------------</text>
+<text x="18" y="488" class="t" xml:space="preserve"><tspan class="cyan">----------------------------------------------------------------------------------------------------------</tspan></text>
+<text x="18" y="506" class="t" xml:space="preserve"> Keys: [<tspan class="yellow">q</tspan>] Quit  [<tspan class="yellow">t</tspan>] View  [<tspan class="yellow">Space</tspan>] Pause  [<tspan class="yellow">r</tspan>] Reset  [<tspan class="yellow">+</tspan>/<tspan class="yellow">-</tspan>] Interval  (-b batch, -J json)</text>
+</g>
 <g class="f0">
 <text x="18" y="146" class="t" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="green">------------------------------</tspan>] <tspan class="cyan">  0.04 GB/s</tspan> (  0.0% of 82.8 GB/s cap)</text>
 <text x="18" y="164" class="t" xml:space="preserve">   &#9500;&#9472; Demand Rd: <tspan class="white">  0.01 GB/s</tspan>   &#9500;&#9472; HW Prefetch: <tspan class="white">  0.03 GB/s</tspan>   &#9500;&#9472; Session Max/Avg: <tspan class="yellow">0.04</tspan> / <tspan class="green">0.04 GB/s</tspan></text>
@@ -149,6 +189,120 @@
 <text x="18" y="434" class="t" xml:space="preserve"> 17:24:46 |  29.40 GB/s |  1.12 GB/s |  28.28 GB/s | [<tspan class="yellow">###-----</tspan>]  35.5% |  3188% | 0.24 | python3       | <tspan class="red">LOCK-CONTENTION / CFS-THROTTLED</tspan></text>
 <text x="18" y="452" class="t" xml:space="preserve"> 17:24:47 |  58.64 GB/s |  1.96 GB/s |  56.68 GB/s | [<tspan class="red">######--</tspan>]  70.8% |  1524% | 0.79 | python3       | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
 <text x="18" y="470" class="t" xml:space="preserve"> 17:24:48 |   0.04 GB/s |  0.01 GB/s |   0.03 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     3% | 0.64 | idle          | <tspan class="gray">IDLE</tspan></text>
+</g>
+<g class="f8">
+<text x="18" y="146" class="t" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="green">------------------------------</tspan>] <tspan class="cyan">  1.68 GB/s</tspan> (  1.6% of 102.4 GB/s cap)</text>
+<text x="18" y="164" class="t" xml:space="preserve">   &#9500;&#9472; Read: <tspan class="white">  1.45 GB/s</tspan>   &#9500;&#9472; Write: <tspan class="white">  0.23 GB/s</tspan>   &#9500;&#9472; Session Max/Avg: <tspan class="yellow">1.68</tspan> / <tspan class="green">1.68 GB/s</tspan></text>
+<text x="18" y="182" class="t" xml:space="preserve">   &#9500;&#9472; P-CPU <tspan class="white">0.1</tspan>  E-CPU <tspan class="white">0.4</tspan>  GPU <tspan class="white">0.2</tspan>  ANE <tspan class="white">0.0</tspan>  Media <tspan class="white">0.0</tspan>  Display <tspan class="white">0.9</tspan>  Other <tspan class="white">0.1</tspan>  (GB/s)  |  CPU 1%, GPU 0% of measured caps</text>
+<text x="18" y="200" class="t" xml:space="preserve"><tspan class="white"> CPU Util      </tspan>: [<tspan class="green">#-----------------------------</tspan>] <tspan class="white">    21%</tspan>     (IPC 1.18 | MPKI 0.6 | GPU 7% | CPU Power 0.4 W)</text>
+<text x="18" y="218" class="t" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="yellow">ACTIVE (Balanced Workload)</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">WindowServer</tspan>)</text>
+<text x="18" y="290" class="t" xml:space="preserve"> 161     | WindowServer    |   24 |   0.23 GB/s~ |  0.17 GB/s |   0.06 GB/s | [<tspan class="green">--------</tspan>]   0.2% |     9% |    6% | 1.32 | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="308" class="t" xml:space="preserve"> -       | [kernel/ephem]  |    - |   0.14 GB/s  |  0.10 GB/s |   0.04 GB/s | [<tspan class="green">--------</tspan>]   0.1% |     0% |    0% |    - | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+<text x="18" y="326" class="t" xml:space="preserve"> 1290    | Safari          |   33 |   0.05 GB/s? |  0.04 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     3% |    1% | 1.41 | <tspan class="gray">IDLE</tspan></text>
+<text x="18" y="344" class="t" xml:space="preserve"> 4821    | llama-server    |   14 |   0.00 GB/s  |  0.00 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     0% |    0% |    - | <tspan class="gray">IDLE</tspan></text>
+<text x="18" y="416" class="t" xml:space="preserve"> 21:14:05 |   1.68 GB/s |  1.45 GB/s |   0.23 GB/s | [<tspan class="green">--------</tspan>]   1.6% |    21% |   7% | WindowServer  | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+</g>
+<g class="f9">
+<text x="18" y="146" class="t" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="green">########----------------------</tspan>] <tspan class="cyan"> 27.21 GB/s</tspan> ( 26.6% of 102.4 GB/s cap)</text>
+<text x="18" y="164" class="t" xml:space="preserve">   &#9500;&#9472; Read: <tspan class="white"> 24.03 GB/s</tspan>   &#9500;&#9472; Write: <tspan class="white">  3.18 GB/s</tspan>   &#9500;&#9472; Session Max/Avg: <tspan class="yellow">27.21</tspan> / <tspan class="green">14.45 GB/s</tspan></text>
+<text x="18" y="182" class="t" xml:space="preserve">   &#9500;&#9472; P-CPU <tspan class="white">1.2</tspan>  E-CPU <tspan class="white">0.4</tspan>  GPU <tspan class="white">24.6</tspan>  ANE <tspan class="white">0.0</tspan>  Media <tspan class="white">0.0</tspan>  Display <tspan class="white">0.9</tspan>  Other <tspan class="white">0.1</tspan>  (GB/s)  |  CPU 2%, GPU 28% of measured caps</text>
+<text x="18" y="200" class="t" xml:space="preserve"><tspan class="white"> CPU Util      </tspan>: [<tspan class="green">#####-------------------------</tspan>] <tspan class="white">   131%</tspan>     (IPC 2.07 | MPKI 1.9 | GPU 99% | CPU Power 2.3 W)</text>
+<text x="18" y="218" class="t" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="blue">COMPUTE-BOUND (GPU)</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">llama-server</tspan>)</text>
+<text x="18" y="290" class="t" xml:space="preserve"> 4821    | llama-server    |   14 |  24.92 GB/s  | 22.01 GB/s |   2.91 GB/s | [<tspan class="green">##------</tspan>]  24.3% |    98% |   97% | 2.11 | <tspan class="blue">COMPUTE-BOUND (GPU)</tspan></text>
+<text x="18" y="308" class="t" xml:space="preserve"> 161     | WindowServer    |   24 |   0.54 GB/s? |  0.41 GB/s |   0.13 GB/s | [<tspan class="green">--------</tspan>]   0.5% |    10% |    2% | 1.29 | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="326" class="t" xml:space="preserve"> -       | [kernel/ephem]  |    - |   0.21 GB/s  |  0.15 GB/s |   0.06 GB/s | [<tspan class="green">--------</tspan>]   0.2% |     0% |    0% |    - | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+<text x="18" y="344" class="t" xml:space="preserve"> 1290    | Safari          |   33 |   0.05 GB/s? |  0.04 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     3% |    0% | 1.40 | <tspan class="gray">IDLE</tspan></text>
+<text x="18" y="416" class="t" xml:space="preserve"> 21:14:05 |   1.68 GB/s |  1.45 GB/s |   0.23 GB/s | [<tspan class="green">--------</tspan>]   1.6% |    21% |   7% | WindowServer  | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="434" class="t" xml:space="preserve"> 21:14:06 |  27.21 GB/s | 24.03 GB/s |   3.18 GB/s | [<tspan class="green">##------</tspan>]  26.6% |   131% |  99% | llama-server  | <tspan class="blue">COMPUTE-BOUND (GPU)</tspan></text>
+</g>
+<g class="f10">
+<text x="18" y="146" class="t" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="yellow">###################-----------</tspan>] <tspan class="cyan"> 63.46 GB/s</tspan> ( 62.0% of 102.4 GB/s cap)</text>
+<text x="18" y="164" class="t" xml:space="preserve">   &#9500;&#9472; Read: <tspan class="white"> 60.60 GB/s</tspan>   &#9500;&#9472; Write: <tspan class="white">  2.86 GB/s</tspan>   &#9500;&#9472; Session Max/Avg: <tspan class="yellow">63.46</tspan> / <tspan class="green">30.78 GB/s</tspan></text>
+<text x="18" y="182" class="t" xml:space="preserve">   &#9500;&#9472; P-CPU <tspan class="white">0.9</tspan>  E-CPU <tspan class="white">0.4</tspan>  GPU <tspan class="white">61.1</tspan>  ANE <tspan class="white">0.0</tspan>  Media <tspan class="white">0.0</tspan>  Display <tspan class="white">0.9</tspan>  Other <tspan class="white">0.2</tspan>  (GB/s)  |  CPU 2%, GPU 69% of measured caps</text>
+<text x="18" y="200" class="t" xml:space="preserve"><tspan class="white"> CPU Util      </tspan>: [<tspan class="green">###---------------------------</tspan>] <tspan class="white">    74%</tspan>     (IPC 1.86 | MPKI 1.4 | GPU 96% | CPU Power 1.6 W)</text>
+<text x="18" y="218" class="t" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">llama-server</tspan>)</text>
+<text x="18" y="290" class="t" xml:space="preserve"> 4821    | llama-server    |   14 |  60.39 GB/s  | 57.77 GB/s |   2.62 GB/s | [<tspan class="yellow">#####---</tspan>]  59.0% |    52% |   94% | 1.93 | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="308" class="t" xml:space="preserve"> 161     | WindowServer    |   24 |   1.27 GB/s? |  0.98 GB/s |   0.29 GB/s | [<tspan class="green">--------</tspan>]   1.2% |     9% |    2% | 1.30 | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="326" class="t" xml:space="preserve"> -       | [kernel/ephem]  |    - |   0.33 GB/s  |  0.24 GB/s |   0.09 GB/s | [<tspan class="green">--------</tspan>]   0.3% |     0% |    0% |    - | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+<text x="18" y="344" class="t" xml:space="preserve"> 1290    | Safari          |   33 |   0.05 GB/s? |  0.04 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     2% |    0% | 1.38 | <tspan class="gray">IDLE</tspan></text>
+<text x="18" y="416" class="t" xml:space="preserve"> 21:14:05 |   1.68 GB/s |  1.45 GB/s |   0.23 GB/s | [<tspan class="green">--------</tspan>]   1.6% |    21% |   7% | WindowServer  | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="434" class="t" xml:space="preserve"> 21:14:06 |  27.21 GB/s | 24.03 GB/s |   3.18 GB/s | [<tspan class="green">##------</tspan>]  26.6% |   131% |  99% | llama-server  | <tspan class="blue">COMPUTE-BOUND (GPU)</tspan></text>
+<text x="18" y="452" class="t" xml:space="preserve"> 21:14:07 |  63.46 GB/s | 60.60 GB/s |   2.86 GB/s | [<tspan class="yellow">#####---</tspan>]  62.0% |    74% |  96% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+</g>
+<g class="f11">
+<text x="18" y="146" class="t" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="yellow">###################-----------</tspan>] <tspan class="cyan"> 66.32 GB/s</tspan> ( 64.8% of 102.4 GB/s cap)</text>
+<text x="18" y="164" class="t" xml:space="preserve">   &#9500;&#9472; Read: <tspan class="white"> 63.37 GB/s</tspan>   &#9500;&#9472; Write: <tspan class="white">  2.95 GB/s</tspan>   &#9500;&#9472; Session Max/Avg: <tspan class="yellow">66.32</tspan> / <tspan class="green">39.67 GB/s</tspan></text>
+<text x="18" y="182" class="t" xml:space="preserve">   &#9500;&#9472; P-CPU <tspan class="white">0.9</tspan>  E-CPU <tspan class="white">0.4</tspan>  GPU <tspan class="white">64.0</tspan>  ANE <tspan class="white">0.0</tspan>  Media <tspan class="white">0.0</tspan>  Display <tspan class="white">0.9</tspan>  Other <tspan class="white">0.2</tspan>  (GB/s)  |  CPU 2%, GPU 72% of measured caps</text>
+<text x="18" y="200" class="t" xml:space="preserve"><tspan class="white"> CPU Util      </tspan>: [<tspan class="green">###---------------------------</tspan>] <tspan class="white">    71%</tspan>     (IPC 1.84 | MPKI 1.3 | GPU 97% | CPU Power 1.6 W)</text>
+<text x="18" y="218" class="t" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">llama-server</tspan>)</text>
+<text x="18" y="290" class="t" xml:space="preserve"> 4821    | llama-server    |   14 |  63.15 GB/s  | 60.45 GB/s |   2.70 GB/s | [<tspan class="yellow">#####---</tspan>]  61.7% |    50% |   95% | 1.92 | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="308" class="t" xml:space="preserve"> 161     | WindowServer    |   24 |   1.33 GB/s? |  1.03 GB/s |   0.30 GB/s | [<tspan class="green">--------</tspan>]   1.3% |     9% |    2% | 1.31 | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="326" class="t" xml:space="preserve"> -       | [kernel/ephem]  |    - |   0.34 GB/s  |  0.25 GB/s |   0.09 GB/s | [<tspan class="green">--------</tspan>]   0.3% |     0% |    0% |    - | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+<text x="18" y="344" class="t" xml:space="preserve"> 1290    | Safari          |   33 |   0.05 GB/s? |  0.04 GB/s |   0.01 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     3% |    0% | 1.39 | <tspan class="gray">IDLE</tspan></text>
+<text x="18" y="416" class="t" xml:space="preserve"> 21:14:05 |   1.68 GB/s |  1.45 GB/s |   0.23 GB/s | [<tspan class="green">--------</tspan>]   1.6% |    21% |   7% | WindowServer  | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="434" class="t" xml:space="preserve"> 21:14:06 |  27.21 GB/s | 24.03 GB/s |   3.18 GB/s | [<tspan class="green">##------</tspan>]  26.6% |   131% |  99% | llama-server  | <tspan class="blue">COMPUTE-BOUND (GPU)</tspan></text>
+<text x="18" y="452" class="t" xml:space="preserve"> 21:14:07 |  63.46 GB/s | 60.60 GB/s |   2.86 GB/s | [<tspan class="yellow">#####---</tspan>]  62.0% |    74% |  96% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="470" class="t" xml:space="preserve"> 21:14:08 |  66.32 GB/s | 63.37 GB/s |   2.95 GB/s | [<tspan class="yellow">#####---</tspan>]  64.8% |    71% |  97% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+</g>
+<g class="f12">
+<text x="18" y="146" class="t" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="yellow">####################----------</tspan>] <tspan class="cyan"> 67.76 GB/s</tspan> ( 66.2% of 102.4 GB/s cap)</text>
+<text x="18" y="164" class="t" xml:space="preserve">   &#9500;&#9472; Read: <tspan class="white"> 64.29 GB/s</tspan>   &#9500;&#9472; Write: <tspan class="white">  3.47 GB/s</tspan>   &#9500;&#9472; Session Max/Avg: <tspan class="yellow">67.76</tspan> / <tspan class="green">45.29 GB/s</tspan></text>
+<text x="18" y="182" class="t" xml:space="preserve">   &#9500;&#9472; P-CPU <tspan class="white">0.9</tspan>  E-CPU <tspan class="white">0.6</tspan>  GPU <tspan class="white">63.6</tspan>  ANE <tspan class="white">0.0</tspan>  Media <tspan class="white">1.4</tspan>  Display <tspan class="white">1.1</tspan>  Other <tspan class="white">0.2</tspan>  (GB/s)  |  CPU 2%, GPU 72% of measured caps</text>
+<text x="18" y="200" class="t" xml:space="preserve"><tspan class="white"> CPU Util      </tspan>: [<tspan class="green">####--------------------------</tspan>] <tspan class="white">    96%</tspan>     (IPC 1.79 | MPKI 1.5 | GPU 98% | CPU Power 1.9 W)</text>
+<text x="18" y="218" class="t" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">llama-server</tspan>)</text>
+<text x="18" y="290" class="t" xml:space="preserve"> 4821    | llama-server    |   14 |  61.50 GB/s  | 58.97 GB/s |   2.53 GB/s | [<tspan class="yellow">#####---</tspan>]  60.1% |    51% |   94% | 1.91 | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="308" class="t" xml:space="preserve"> 5012    | IINA            |   19 |   1.49 GB/s? |  1.10 GB/s |   0.39 GB/s | [<tspan class="green">--------</tspan>]   1.5% |    21% |    2% | 1.47 | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="326" class="t" xml:space="preserve"> 161     | WindowServer    |   24 |   1.36 GB/s? |  1.05 GB/s |   0.31 GB/s | [<tspan class="green">--------</tspan>]   1.3% |    10% |    2% | 1.30 | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="344" class="t" xml:space="preserve"> -       | [kernel/ephem]  |    - |   0.35 GB/s  |  0.25 GB/s |   0.10 GB/s | [<tspan class="green">--------</tspan>]   0.3% |     0% |    0% |    - | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+<text x="18" y="416" class="t" xml:space="preserve"> 21:14:06 |  27.21 GB/s | 24.03 GB/s |   3.18 GB/s | [<tspan class="green">##------</tspan>]  26.6% |   131% |  99% | llama-server  | <tspan class="blue">COMPUTE-BOUND (GPU)</tspan></text>
+<text x="18" y="434" class="t" xml:space="preserve"> 21:14:07 |  63.46 GB/s | 60.60 GB/s |   2.86 GB/s | [<tspan class="yellow">#####---</tspan>]  62.0% |    74% |  96% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="452" class="t" xml:space="preserve"> 21:14:08 |  66.32 GB/s | 63.37 GB/s |   2.95 GB/s | [<tspan class="yellow">#####---</tspan>]  64.8% |    71% |  97% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="470" class="t" xml:space="preserve"> 21:14:09 |  67.76 GB/s | 64.29 GB/s |   3.47 GB/s | [<tspan class="yellow">#####---</tspan>]  66.2% |    96% |  98% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+</g>
+<g class="f13">
+<text x="18" y="146" class="t" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="yellow">###################-----------</tspan>] <tspan class="cyan"> 66.36 GB/s</tspan> ( 64.8% of 102.4 GB/s cap)</text>
+<text x="18" y="164" class="t" xml:space="preserve">   &#9500;&#9472; Read: <tspan class="white"> 62.96 GB/s</tspan>   &#9500;&#9472; Write: <tspan class="white">  3.40 GB/s</tspan>   &#9500;&#9472; Session Max/Avg: <tspan class="yellow">67.76</tspan> / <tspan class="green">48.80 GB/s</tspan></text>
+<text x="18" y="182" class="t" xml:space="preserve">   &#9500;&#9472; P-CPU <tspan class="white">0.9</tspan>  E-CPU <tspan class="white">0.6</tspan>  GPU <tspan class="white">62.2</tspan>  ANE <tspan class="white">0.0</tspan>  Media <tspan class="white">1.4</tspan>  Display <tspan class="white">1.1</tspan>  Other <tspan class="white">0.2</tspan>  (GB/s)  |  CPU 2%, GPU 70% of measured caps</text>
+<text x="18" y="200" class="t" xml:space="preserve"><tspan class="white"> CPU Util      </tspan>: [<tspan class="green">###---------------------------</tspan>] <tspan class="white">    93%</tspan>     (IPC 1.80 | MPKI 1.5 | GPU 97% | CPU Power 1.8 W)</text>
+<text x="18" y="218" class="t" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">llama-server</tspan>)</text>
+<text x="18" y="290" class="t" xml:space="preserve"> 4821    | llama-server    |   14 |  60.21 GB/s  | 57.73 GB/s |   2.48 GB/s | [<tspan class="yellow">#####---</tspan>]  58.8% |    50% |   94% | 1.90 | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="308" class="t" xml:space="preserve"> 5012    | IINA            |   19 |   1.47 GB/s? |  1.09 GB/s |   0.38 GB/s | [<tspan class="green">--------</tspan>]   1.4% |    20% |    2% | 1.46 | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="326" class="t" xml:space="preserve"> 161     | WindowServer    |   24 |   1.33 GB/s? |  1.02 GB/s |   0.31 GB/s | [<tspan class="green">--------</tspan>]   1.3% |    10% |    2% | 1.31 | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="344" class="t" xml:space="preserve"> -       | [kernel/ephem]  |    - |   0.34 GB/s  |  0.24 GB/s |   0.10 GB/s | [<tspan class="green">--------</tspan>]   0.3% |     0% |    0% |    - | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+<text x="18" y="416" class="t" xml:space="preserve"> 21:14:07 |  63.46 GB/s | 60.60 GB/s |   2.86 GB/s | [<tspan class="yellow">#####---</tspan>]  62.0% |    74% |  96% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="434" class="t" xml:space="preserve"> 21:14:08 |  66.32 GB/s | 63.37 GB/s |   2.95 GB/s | [<tspan class="yellow">#####---</tspan>]  64.8% |    71% |  97% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="452" class="t" xml:space="preserve"> 21:14:09 |  67.76 GB/s | 64.29 GB/s |   3.47 GB/s | [<tspan class="yellow">#####---</tspan>]  66.2% |    96% |  98% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="470" class="t" xml:space="preserve"> 21:14:10 |  66.36 GB/s | 62.96 GB/s |   3.40 GB/s | [<tspan class="yellow">#####---</tspan>]  64.8% |    93% |  97% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+</g>
+<g class="f14">
+<text x="18" y="146" class="t" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="green">#-----------------------------</tspan>] <tspan class="cyan">  3.97 GB/s</tspan> (  3.9% of 102.4 GB/s cap)</text>
+<text x="18" y="164" class="t" xml:space="preserve">   &#9500;&#9472; Read: <tspan class="white">  3.16 GB/s</tspan>   &#9500;&#9472; Write: <tspan class="white">  0.81 GB/s</tspan>   &#9500;&#9472; Session Max/Avg: <tspan class="yellow">67.76</tspan> / <tspan class="green">42.39 GB/s</tspan></text>
+<text x="18" y="182" class="t" xml:space="preserve">   &#9500;&#9472; P-CPU <tspan class="white">0.1</tspan>  E-CPU <tspan class="white">0.6</tspan>  GPU <tspan class="white">0.7</tspan>  ANE <tspan class="white">0.0</tspan>  Media <tspan class="white">1.4</tspan>  Display <tspan class="white">1.1</tspan>  Other <tspan class="white">0.2</tspan>  (GB/s)  |  CPU 1%, GPU 1% of measured caps</text>
+<text x="18" y="200" class="t" xml:space="preserve"><tspan class="white"> CPU Util      </tspan>: [<tspan class="green">#-----------------------------</tspan>] <tspan class="white">    34%</tspan>     (IPC 1.27 | MPKI 0.8 | GPU 12% | CPU Power 0.6 W)</text>
+<text x="18" y="218" class="t" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="yellow">ACTIVE (Balanced Workload)</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">IINA</tspan>)</text>
+<text x="18" y="290" class="t" xml:space="preserve"> 5012    | IINA            |   19 |   0.51 GB/s~ |  0.38 GB/s |   0.13 GB/s | [<tspan class="green">--------</tspan>]   0.5% |    19% |    6% | 1.45 | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="308" class="t" xml:space="preserve"> 161     | WindowServer    |   24 |   0.38 GB/s~ |  0.29 GB/s |   0.09 GB/s | [<tspan class="green">--------</tspan>]   0.4% |    10% |    6% | 1.33 | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="326" class="t" xml:space="preserve"> -       | [kernel/ephem]  |    - |   0.16 GB/s  |  0.12 GB/s |   0.04 GB/s | [<tspan class="green">--------</tspan>]   0.2% |     0% |    0% |    - | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+<text x="18" y="344" class="t" xml:space="preserve"> 4821    | llama-server    |   14 |   0.01 GB/s  |  0.01 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     1% |    0% | 1.12 | <tspan class="gray">IDLE</tspan></text>
+<text x="18" y="416" class="t" xml:space="preserve"> 21:14:08 |  66.32 GB/s | 63.37 GB/s |   2.95 GB/s | [<tspan class="yellow">#####---</tspan>]  64.8% |    71% |  97% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="434" class="t" xml:space="preserve"> 21:14:09 |  67.76 GB/s | 64.29 GB/s |   3.47 GB/s | [<tspan class="yellow">#####---</tspan>]  66.2% |    96% |  98% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="452" class="t" xml:space="preserve"> 21:14:10 |  66.36 GB/s | 62.96 GB/s |   3.40 GB/s | [<tspan class="yellow">#####---</tspan>]  64.8% |    93% |  97% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="470" class="t" xml:space="preserve"> 21:14:11 |   3.97 GB/s |  3.16 GB/s |   0.81 GB/s | [<tspan class="green">--------</tspan>]   3.9% |    34% |  12% | IINA          | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+</g>
+<g class="f15">
+<text x="18" y="146" class="t" xml:space="preserve"><tspan class="white"> System DRAM BW</tspan>: [<tspan class="green">#-----------------------------</tspan>] <tspan class="cyan">  3.90 GB/s</tspan> (  3.8% of 102.4 GB/s cap)</text>
+<text x="18" y="164" class="t" xml:space="preserve">   &#9500;&#9472; Read: <tspan class="white">  3.11 GB/s</tspan>   &#9500;&#9472; Write: <tspan class="white">  0.79 GB/s</tspan>   &#9500;&#9472; Session Max/Avg: <tspan class="yellow">67.76</tspan> / <tspan class="green">37.58 GB/s</tspan></text>
+<text x="18" y="182" class="t" xml:space="preserve">   &#9500;&#9472; P-CPU <tspan class="white">0.1</tspan>  E-CPU <tspan class="white">0.5</tspan>  GPU <tspan class="white">0.6</tspan>  ANE <tspan class="white">0.0</tspan>  Media <tspan class="white">1.4</tspan>  Display <tspan class="white">1.1</tspan>  Other <tspan class="white">0.2</tspan>  (GB/s)  |  CPU 1%, GPU 1% of measured caps</text>
+<text x="18" y="200" class="t" xml:space="preserve"><tspan class="white"> CPU Util      </tspan>: [<tspan class="green">#-----------------------------</tspan>] <tspan class="white">    32%</tspan>     (IPC 1.25 | MPKI 0.8 | GPU 11% | CPU Power 0.6 W)</text>
+<text x="18" y="218" class="t" xml:space="preserve"><tspan class="white"> Live Diagnosis</tspan>: <tspan class="yellow">ACTIVE (Balanced Workload)</tspan>  (Top Bandwidth Consumer: <tspan class="yellow">IINA</tspan>)</text>
+<text x="18" y="290" class="t" xml:space="preserve"> 5012    | IINA            |   19 |   0.50 GB/s~ |  0.37 GB/s |   0.13 GB/s | [<tspan class="green">--------</tspan>]   0.5% |    18% |    6% | 1.44 | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="308" class="t" xml:space="preserve"> 161     | WindowServer    |   24 |   0.37 GB/s~ |  0.28 GB/s |   0.09 GB/s | [<tspan class="green">--------</tspan>]   0.4% |    10% |    5% | 1.32 | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="326" class="t" xml:space="preserve"> -       | [kernel/ephem]  |    - |   0.15 GB/s  |  0.11 GB/s |   0.04 GB/s | [<tspan class="green">--------</tspan>]   0.1% |     0% |    0% |    - | <tspan class="cyan">KERNEL / EPHEMERAL</tspan></text>
+<text x="18" y="344" class="t" xml:space="preserve"> 4821    | llama-server    |   14 |   0.00 GB/s  |  0.00 GB/s |   0.00 GB/s | [<tspan class="green">--------</tspan>]   0.0% |     0% |    0% |    - | <tspan class="gray">IDLE</tspan></text>
+<text x="18" y="416" class="t" xml:space="preserve"> 21:14:09 |  67.76 GB/s | 64.29 GB/s |   3.47 GB/s | [<tspan class="yellow">#####---</tspan>]  66.2% |    96% |  98% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="434" class="t" xml:space="preserve"> 21:14:10 |  66.36 GB/s | 62.96 GB/s |   3.40 GB/s | [<tspan class="yellow">#####---</tspan>]  64.8% |    93% |  97% | llama-server  | <tspan class="green">MEMORY-BOUND (DRAM BW Saturated)</tspan></text>
+<text x="18" y="452" class="t" xml:space="preserve"> 21:14:11 |   3.97 GB/s |  3.16 GB/s |   0.81 GB/s | [<tspan class="green">--------</tspan>]   3.9% |    34% |  12% | IINA          | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
+<text x="18" y="470" class="t" xml:space="preserve"> 21:14:12 |   3.90 GB/s |  3.11 GB/s |   0.79 GB/s | [<tspan class="green">--------</tspan>]   3.8% |    32% |  11% | IINA          | <tspan class="yellow">ACTIVE (Balanced Workload)</tspan></text>
 </g>
 </g>
 </svg>
