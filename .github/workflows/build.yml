@@ -16,26 +16,24 @@ concurrency:
 
 jobs:
   check:
-    name: Warnings and sanitizers
+    name: Warnings, unit tests and sanitizers
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
-      - name: Build with GCC and Clang (-Werror)
+      - name: Build and unit-test with GCC and Clang (-Werror)
         run: |
           for cc in gcc clang; do
             make clean
-            make CC=$cc CFLAGS="-O2 -Wall -Wextra -Wshadow -Wformat=2 -Werror"
+            make test accuracy CC=$cc CFLAGS="-O2 -Wall -Wextra -Wshadow -Wformat=2 -Werror"
           done
 
-      - name: Build with ASan + UBSan and smoke test
+      - name: Unit tests under ASan + UBSan
         run: |
           # Newer runner kernels use more mmap entropy than older sanitizer runtimes expect.
           sudo sysctl -w vm.mmap_rnd_bits=28
           make clean
-          make CC=clang CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
-          ./dramtop --version
-          ./dramtop --help > /dev/null
+          make test CC=clang CFLAGS="-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
 
   build:
     name: Static binary (${{ matrix.arch }})
@@ -58,6 +56,7 @@ jobs:
           docker run --rm -v "$PWD:/src" -w /src -e VERSION="$version" alpine:3.22 sh -euc '
             apk add --no-cache build-base linux-headers > /dev/null
             make static VERSION="$VERSION" CFLAGS="-O2 -Wall -Wextra -Werror"
+            make test CFLAGS="-O2 -Wall -Wextra -Werror"
           '
           mv dramtop-static dramtop-linux-${{ matrix.arch }}
           file dramtop-linux-${{ matrix.arch }}

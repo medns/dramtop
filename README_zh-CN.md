@@ -68,7 +68,7 @@ dramtop -J -n 5 | jq .       # 每次采样输出一行 JSON
 
 ## 🛠️ 从源码编译
 
-需要 `gcc` 或 `clang`，以及 Linux 内核头文件：
+需要 `gcc` 或 `clang`、`make`，以及 Linux 内核头文件：
 
 ```sh
 git clone https://github.com/medns/dramtop.git

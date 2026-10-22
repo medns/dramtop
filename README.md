@@ -68,7 +68,7 @@ dramtop -J -n 5 | jq .       # one JSON object per sample
 
 ## 🛠️ Build from Source
 
-You need `gcc` or `clang` and the Linux kernel headers:
+You need `gcc` or `clang`, `make` and the Linux kernel headers:
 
 ```sh
 git clone https://github.com/medns/dramtop.git

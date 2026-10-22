@@ -5,6 +5,9 @@ dramtop-linux-*
 SHA256SUMS
 *.o
 *.out
+tests/*
+!tests/*.c
+!tests/*.h
 
 # Editor / OS files
 .vscode/
