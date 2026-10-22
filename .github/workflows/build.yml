@@ -73,9 +73,39 @@ jobs:
           path: dramtop-linux-${{ matrix.arch }}
           if-no-files-found: error
 
+  macos:
+    name: macOS binary (arm64)
+    needs: check
+    runs-on: macos-15
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v7
+
+      # Hosted runners are virtual machines without the memory controller counters, so only the build and unit tests run here.
+      - name: Build and unit-test (-Werror)
+        run: make test accuracy CFLAGS="-O2 -Wall -Wextra -Wshadow -Wformat=2 -Werror"
+
+      - name: Build the release binary
+        run: |
+          version=""
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then version="${GITHUB_REF_NAME#v}"; fi
+          make clean
+          make VERSION="$version" CFLAGS="-O2 -Wall -Wextra -Werror"
+          mv dramtop dramtop-macos-arm64
+          file dramtop-macos-arm64
+          ls -l dramtop-macos-arm64
+          ./dramtop-macos-arm64 --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dramtop-macos-arm64
+          path: dramtop-macos-arm64
+          if-no-files-found: error
+
   release:
     name: GitHub Release
-    needs: build
+    needs: [build, macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
@@ -89,7 +119,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum dramtop-linux-* > SHA256SUMS
+          sha256sum dramtop-linux-* dramtop-macos-* > SHA256SUMS
           cat SHA256SUMS
 
       - uses: softprops/action-gh-release@v3
@@ -98,4 +128,5 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/dramtop-linux-*
+            dist/dramtop-macos-*
             dist/SHA256SUMS
