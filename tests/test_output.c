@@ -111,6 +111,18 @@ static void test_platform_columns(void) {
     g.info.estimated = false;
     p.m.has_bw = true;
     CHECK_INT(conf_mark(&p), ' ');
+
+    g.info = (dt_info_t){.has_rw = true, .rw_total_only = true, .has_gpu = true}; /* a Mac giving the total only */
+    sample_t s = {.m = {.read_gbs = 30.0, .gpu_pct = 40.0}};
+    char c3[24], c4[24], c7[16];
+    timeline_cells(&s, c3, c4, c7);
+    CHECK_STR(c3, "         -");
+    CHECK_STR(c4, "          -");
+    CHECK_STR(c7, " 40%");
+    CHECK(!gpu_traffic_known());
+    g.info.nagents = 7;
+    g.info.gpu_agent = 2;
+    CHECK(gpu_traffic_known());
 }
 
 int main(void) {

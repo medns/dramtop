@@ -18,7 +18,7 @@
 #include <time.h>
 
 #ifndef DRAMTOP_VERSION
-#define DRAMTOP_VERSION "1.2.0"
+#define DRAMTOP_VERSION "1.2.1"
 #endif
 
 #define RING_SIZE         64
@@ -244,12 +244,13 @@ static void compute_rates(metrics_t *m, const dt_counts_t *c, double dt) {
     m->has_bw = true;
 }
 
+static bool gpu_traffic_known(void) { return g.info.gpu_agent >= 0 && g.info.gpu_agent < g.info.nagents; }
+
 /* Traffic of the CPU clusters and of the GPU in a sample, in GB/s. */
 static void agent_split(const sample_t *s, double *cpu, double *gpu) {
     *cpu = *gpu = 0.0;
     for (int a = 0; a < g.info.cpu_agents && a < g.info.nagents; a++) *cpu += s->agent_rd[a] + s->agent_wr[a];
-    if (g.info.gpu_agent >= 0 && g.info.gpu_agent < g.info.nagents)
-        *gpu = s->agent_rd[g.info.gpu_agent] + s->agent_wr[g.info.gpu_agent];
+    if (gpu_traffic_known()) *gpu = s->agent_rd[g.info.gpu_agent] + s->agent_wr[g.info.gpu_agent];
 }
 
 static double util_of(double gbs) {
@@ -270,14 +271,15 @@ static state_t diagnose(const metrics_t *m, double throttle_ratio) {
     if (busy && dram_stalls) return ST_MEM_LAT;
     /* Low IPC without DRAM misses while the CPU budget is exhausted: spinning or oversubscription. */
     if (m->cpu_pct >= 90.0 * g.info.eff_cpus && m->ipc > 0 && m->ipc < 0.3) return ST_CONTENTION;
-    return busy ? ST_COMPUTE : ST_ACTIVE;
+    /* Without instruction counts (macOS without root) there is no miss rate to call it cache-resident. */
+    return busy && m->ipc > 0 ? ST_COMPUTE : ST_ACTIVE;
 }
 
 static int cmp_view(const void *a, const void *b) {
     const dt_proc_t *x = *(dt_proc_t *const *)a, *y = *(dt_proc_t *const *)b;
     long bx = (long)(x->m.total_gbs * 100), by = (long)(y->m.total_gbs * 100);
     if (bx != by) return bx < by ? 1 : -1;
-    long cx = (long)x->m.cpu_pct, cy = (long)y->m.cpu_pct;
+    long cx = (long)(x->m.cpu_pct + x->m.gpu_pct), cy = (long)(y->m.cpu_pct + y->m.gpu_pct);
     if (cx != cy) return cx < cy ? 1 : -1;
     return (x->pid > y->pid) - (x->pid < y->pid);
 }
@@ -295,6 +297,7 @@ static void sample(sample_t *s, bool discard) {
         p->m.cpu_pct = p->cpu_sec / dt * 100.0;
         p->m.gpu_pct = p->gpu_sec / dt * 100.0;
         p->m.cpu_power_w = p->energy_j / dt;
+        if (p->bw_sec > 0) p->m.gpu_gbs = p->c.gpu * (double)g.info.line / p->bw_sec / 1e9;
         cpu_total += p->m.cpu_pct;
         if (p->has_bw) compute_rates(&p->m, &p->c, p->bw_sec);
         else if (p->has_ipc && p->c.cycles > 0) p->m.ipc = p->c.insns / p->c.cycles;
@@ -361,6 +364,8 @@ static void sample(sample_t *s, bool discard) {
     if (top_agent >= 0) { /* without per-process traffic, name the busiest part of the chip instead */
         snprintf(s->top, sizeof s->top, "%s",
                  s->agent_rd[top_agent] + s->agent_wr[top_agent] >= 0.05 ? g.info.agent[top_agent] : "idle");
+    } else if (g.info.no_proc_bw) { /* nor the parts */
+        snprintf(s->top, sizeof s->top, "-");
     } else if (g.nview && (g.view[0]->m.total_gbs >= 0.05 || g.view[0]->m.cpu_pct >= 1.0)) {
         snprintf(s->top, sizeof s->top, "%s", g.view[0]->name);
         s->top_pid = g.view[0]->pid;
@@ -428,6 +433,13 @@ static char conf_mark(const dt_proc_t *p) {
 }
 
 static void proc_header(void) {
+    if (g.info.no_proc_bw) {
+        out_line("%s=========================================== [ TOP PROCESSES ] ============================================", C(CYAN));
+        out_line(" %s%-7s | %-31s | %-4s | %-6s | %-5s | %s%s%s", C(WHITE), "PID", "PROCESS", "THR", "CPU%", "GPU%",
+                 gpu_traffic_known() ? "DRAM (GPU)  | " : "", "IPC", C(RST));
+        out_line("%s", DASH);
+        return;
+    }
     out_line("%s================================== [ TOP PROCESSES BY DRAM BANDWIDTH ] ===================================", C(CYAN));
     if (g.info.has_rw)
         out_line(" %s%-7s | %-15s | %-4s | %-12s | %-10s | %-11s | %-17s | %-6s | %-5s | %-4s | %s%s", C(WHITE), "PID",
@@ -445,6 +457,13 @@ static void proc_row(const dt_proc_t *p) {
     if (!other) {
         snprintf(pid, sizeof pid, "%d", p->pid);
         snprintf(thr, sizeof thr, "%d", p->threads);
+    }
+    if (g.info.no_proc_bw) {
+        char gcol[40] = "";
+        if (gpu_traffic_known()) snprintf(gcol, sizeof gcol, "%s | ", fmt_bw(tot, sizeof tot, true, p->m.gpu_gbs, 6));
+        out_line(" %-7s | %-31.31s | %4s | %5.0f%% | %4.0f%% | %s%s", pid, p->name, thr, p->m.cpu_pct, p->m.gpu_pct,
+                 gcol, fmt_ipc(ipc, sizeof ipc, p->m.ipc));
+        return;
     }
     if (p->m.has_bw) snprintf(up, sizeof up, "%5.1f%%", p->m.util_pct);
     else snprintf(up, sizeof up, "%6s", "-");
@@ -475,8 +494,8 @@ static const char *const *timeline_titles(void) {
 
 static void timeline_cells(const sample_t *s, char c3[24], char c4[24], char c7[16]) {
     if (g.info.has_rw) {
-        fmt_bw(c3, 24, true, s->m.read_gbs, 5);
-        fmt_bw(c4, 24, true, s->m.write_gbs, 6);
+        fmt_bw(c3, 24, !g.info.rw_total_only, s->m.read_gbs, 5);
+        fmt_bw(c4, 24, !g.info.rw_total_only, s->m.write_gbs, 6);
     } else {
         fmt_bw(c3, 24, g.info.has_split, s->m.demand_gbs, 5);
         fmt_bw(c4, 24, g.info.has_split, s->m.prefetch_gbs, 6);
@@ -530,6 +549,9 @@ static void render(const sample_t *ring, int count, int head, int view, bool pau
         out_line("   ├─ Demand Rd: %s%6.2f GB/s%s   ├─ HW Prefetch: %s%6.2f GB/s%s   ├─ Session Max/Avg: %s%.2f%s / %s%.2f GB/s%s",
                  C(WHITE), cur->m.demand_gbs, C(RST), C(WHITE), cur->m.prefetch_gbs, C(RST), C(YELLOW), g.max_bw, C(RST),
                  C(GREEN), avg, C(RST));
+    else if (g.info.has_rw && g.info.rw_total_only)
+        out_line("   ├─ Read/Write split: n/a on this chip   ├─ Session Max/Avg: %s%.2f%s / %s%.2f GB/s%s", C(YELLOW),
+                 g.max_bw, C(RST), C(GREEN), avg, C(RST));
     else if (g.info.has_rw)
         out_line("   ├─ Read: %s%6.2f GB/s%s   ├─ Write: %s%6.2f GB/s%s   ├─ Session Max/Avg: %s%.2f%s / %s%.2f GB/s%s",
                  C(WHITE), cur->m.read_gbs, C(RST), C(WHITE), cur->m.write_gbs, C(RST), C(YELLOW), g.max_bw, C(RST),
@@ -643,8 +665,8 @@ static void print_json(const sample_t *s) {
     json_bw("demand_bw_gbs", g.info.has_split, s->m.demand_gbs);
     json_bw("prefetch_bw_gbs", g.info.has_split, s->m.prefetch_gbs);
     if (g.info.has_rw) {
-        json_bw("read_bw_gbs", true, s->m.read_gbs);
-        json_bw("write_bw_gbs", true, s->m.write_gbs);
+        json_bw("read_bw_gbs", !g.info.rw_total_only, s->m.read_gbs);
+        json_bw("write_bw_gbs", !g.info.rw_total_only, s->m.write_gbs);
     }
     if (g.info.nagents > 0) {
         printf("\"agents\":{");
@@ -679,7 +701,11 @@ static void print_json(const sample_t *s) {
             json_bw("write_bw_gbs", p->m.has_bw, p->m.write_gbs);
         }
         printf("\"util_pct\":%.2f,\"cpu_pct\":%.1f,", p->m.util_pct, p->m.cpu_pct);
-        if (g.info.has_gpu) printf("\"gpu_pct\":%.1f,\"cpu_power_w\":%.2f,", p->m.gpu_pct, p->m.cpu_power_w);
+        if (g.info.has_gpu) {
+            printf("\"gpu_pct\":%.1f,", p->m.gpu_pct);
+            json_bw("gpu_bw_gbs", gpu_traffic_known(), p->m.gpu_gbs);
+            printf("\"cpu_power_w\":%.2f,", p->m.cpu_power_w);
+        }
         printf("\"ipc\":%.3f,", p->m.ipc);
         if (g.info.estimated) {
             printf("\"estimated\":true,");
@@ -957,6 +983,11 @@ int main(int argc, char **argv) {
     double measured = measure ? calibrate() : 0.0;
     plat_start_system(&g.info); /* runs the backend's own probes when asked to, before its system-wide counters */
     if (measure && om.tell) fputs("\r\033[K", stderr);
+    if ((g.o.filter_pid > 0 || g.o.filter_name) && g.info.no_proc_bw) {
+        fprintf(stderr, "dramtop: -p and -P need per-process bandwidth, which is not available (%s)\n",
+                g.info.no_proc_bw);
+        return 1;
+    }
     if (!measure) {
         g.peak = g.o.ceiling;
     } else if (g.info.spec_gbs > 0) { /* the CPU alone falls well short of the chip's rated bandwidth */

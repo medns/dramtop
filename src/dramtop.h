@@ -35,7 +35,7 @@ typedef enum {
 } state_t;
 
 typedef struct {
-    double total_gbs, demand_gbs, prefetch_gbs, read_gbs, write_gbs;
+    double total_gbs, demand_gbs, prefetch_gbs, read_gbs, write_gbs, gpu_gbs;
     double util_pct, cpu_pct, gpu_pct, cpu_power_w, ipc, mpki;
     bool has_bw;
     state_t state;
@@ -45,6 +45,7 @@ typedef struct {
 typedef struct {
     double total, demand, prefetch, read, write;
     double cpu_read; /* lines read for the CPU clusters, which MPKI counts when the chip has agents */
+    double gpu;      /* lines of the GPU's traffic that go to a process by its share of GPU time */
     double cycles, insns;
 } dt_counts_t;
 
@@ -73,21 +74,23 @@ typedef struct {
 
 typedef struct {
     const char *cpu_name;
-    const char *backend; /* which counters measure DRAM traffic */
-    const char *scope;   /* how the whole system is covered, set by plat_start_system() */
-    const char *mode;    /* the same as a short JSON value */
+    const char *backend;    /* which counters measure DRAM traffic */
+    const char *scope;      /* how the whole system is covered, set by plat_start_system() */
+    const char *mode;       /* the same as a short JSON value */
+    const char *no_proc_bw; /* why per-process traffic is unavailable, NULL when it is available */
     int ncpus;           /* online logical CPUs */
     double eff_cpus;     /* CPUs this process may use: affinity mask or cgroup quota */
     bool has_quota;      /* eff_cpus comes from a cgroup CPU quota */
     unsigned line;       /* cache line size in bytes */
     bool has_split;      /* demand reads and prefetch fills are counted separately */
     bool has_rw;         /* DRAM reads and writes are counted separately */
+    bool rw_total_only;  /* the platform splits reads and writes, but this chip gives only their sum */
     bool has_cfs;        /* cgroup CPU throttling is tracked */
     bool has_gpu;        /* per-process GPU time and CPU energy are reported */
     bool estimated;      /* per-process traffic is apportioned, not counted */
     double spec_gbs;     /* DRAM bandwidth of the chip's specification, 0 if unknown */
     double gpu_cap_gbs;  /* measured GPU streaming bandwidth, 0 if not measured */
-    int nagents;         /* parts of the chip with their own exact DRAM counters */
+    int nagents;         /* parts of the chip with their own DRAM traffic figures */
     const char *agent[MAX_AGENTS];
     int cpu_agents;      /* agent[0 .. cpu_agents-1] are CPU clusters */
     int gpu_agent;       /* index of the GPU in agent[], or -1 */

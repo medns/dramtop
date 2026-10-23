@@ -3,7 +3,10 @@
  *
  * DRAM traffic comes from the memory controller counters that IOReport
  * publishes ("AMC Stats"): exact read and write bytes for every part of the
- * chip (CPU clusters, GPU, Neural Engine, media engines, display, IO).
+ * chip (CPU clusters, GPU, Neural Engine, media engines, display, IO). Where
+ * macOS keeps those for Apple's own services, the power manager's bandwidth
+ * histograms ("PMP") give approximate figures for the chip and its parts, and
+ * per-process traffic is at best a rough estimate.
  * Processes, CPU time, instructions, cycles and energy come from libproc,
  * GPU time from the GPU driver's user clients in the IORegistry.
  *
@@ -180,6 +183,10 @@ static struct {
     CFDictionaryRef (*delta)(CFDictionaryRef, CFDictionaryRef, CFTypeRef);
     int64_t (*value)(CFDictionaryRef, int32_t *);
     CFStringRef (*name)(CFDictionaryRef);
+    int (*format)(CFDictionaryRef); /* these four read the bandwidth histograms */
+    int32_t (*states)(CFDictionaryRef);
+    CFStringRef (*state_name)(CFDictionaryRef, int32_t);
+    int64_t (*residency)(CFDictionaryRef, int32_t);
 } ior;
 
 static struct {
@@ -234,6 +241,10 @@ static struct {
     int ncpus;
     unsigned line;
     double spec;
+    bool approx;        /* the chip's traffic comes from the PMP bandwidth histograms */
+    bool chip_only;     /* the histograms give the chip total only, not its parts */
+    bool rw_total_only; /* and its reads and writes only as their sum */
+    double pmp_top;     /* GB/s of the chip total's top histogram bucket */
 
     IOReportSubscriptionRef sub;
     CFMutableDictionaryRef subbed;
@@ -343,6 +354,7 @@ static double spec_of(const char *chip, int gpu) {
         {"Apple M3 Pro", 0, 153.6},   {"Apple M3 Max", 0, 307.2},   {"Apple M3 Max", 40, 409.6},
         {"Apple M3 Ultra", 0, 819.2}, {"Apple M4", 0, 120.0},       {"Apple M4 Pro", 0, 273.1},
         {"Apple M4 Max", 0, 409.6},   {"Apple M4 Max", 40, 546.1},  {"Apple M5", 0, 153.6},
+        {"Apple M6", 0, 170.0},
     };
     double best = 0;
     int best_gpu = -1;
@@ -409,12 +421,14 @@ static void map_cpus(void) {
     }
     IOObjectRelease(cpus);
 
-    /* The k-th cluster of a type goes to the k-th AMC prefix of that type, or to the only one. */
+    /* The k-th cluster of a kind goes to the k-th group of that kind, or to the only one. Every
+     * cluster type but E ("P", or "M" for the middle tier of an M5 or M6) is a performance kind. */
     for (int i = 0; i < n; i++) {
         if (c[i].cpu < 0 || c[i].cpu >= MAX_CPUS) continue;
+        bool eff = c[i].type == 'E';
         int clusters = 0, rank = 0, seen[MAX_CPUS], ns = 0;
         for (int j = 0; j < n; j++) {
-            if (c[j].type != c[i].type) continue;
+            if ((c[j].type == 'E') != eff) continue;
             bool dup = false;
             for (int s = 0; s < ns; s++) dup |= seen[s] == c[j].cluster;
             if (dup) continue;
@@ -424,7 +438,7 @@ static void map_cpus(void) {
         }
         int match[MAX_GROUPS], nm = 0;
         for (int k = 0; k < g.ngroups; k++)
-            if ((g.group_agent[k] == AG_ECPU ? 'E' : 'P') == c[i].type) match[nm++] = k;
+            if ((g.group_agent[k] == AG_ECPU) == eff) match[nm++] = k;
         if (nm == 1) g.cpu_group[c[i].cpu] = match[0];
         else if (nm == clusters && rank < nm) g.cpu_group[c[i].cpu] = match[rank];
     }
@@ -457,6 +471,10 @@ static bool load_ioreport(void) {
     *(void **)&ior.delta = dlsym(h, "IOReportCreateSamplesDelta");
     *(void **)&ior.value = dlsym(h, "IOReportSimpleGetIntegerValue");
     *(void **)&ior.name = dlsym(h, "IOReportChannelGetChannelName");
+    *(void **)&ior.format = dlsym(h, "IOReportChannelGetFormat");
+    *(void **)&ior.states = dlsym(h, "IOReportStateGetCount");
+    *(void **)&ior.state_name = dlsym(h, "IOReportStateGetNameForIndex");
+    *(void **)&ior.residency = dlsym(h, "IOReportStateGetResidency");
     return ior.copy_group && ior.subscribe && ior.samples && ior.delta && ior.value && ior.name;
 }
 
@@ -585,6 +603,220 @@ static double amc_read(CFDictionaryRef *base, amc_t *out) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Bandwidth histograms (PMP "DCS BW"), where "AMC Stats" is closed    */
+/* ------------------------------------------------------------------ */
+
+/* Newer chips reserve "AMC Stats" for Apple's own services. Their power manager still publishes a
+ * histogram per requester instead: how many of its sampling ticks fell into each bandwidth bucket.
+ * A requester's mean comes from the bucket midpoints over the memory controller's ticks, which
+ * run whether or not the requester is powered. The buckets top out (32 GB/s for a CPU cluster,
+ * 128 GB/s for the GPU and the whole chip on an M6), so heavy traffic reads low, and the lowest
+ * bucket gives an idle chip a small floor. */
+#define PMP_SATURATED 0.2 /* share of a cluster's ticks in its top bucket that marks it saturated */
+#define APPROX_CONFIDENCE 0.7 /* the best a process estimated from the histograms gets: marked '~' */
+
+/* "<requester> RD|WR"; the real-time variants ("DISP RT RD") are part of their requester's traffic. */
+static bool pmp_name(const char *name, char *prefix, size_t n, bool *write) {
+    size_t len = strlen(name);
+    if (len < 4 || len - 3 >= n || name[len - 3] != ' ') return false;
+    if (!strcmp(name + len - 2, "RD")) *write = false;
+    else if (!strcmp(name + len - 2, "WR")) *write = true;
+    else return false;
+    memcpy(prefix, name, len - 3);
+    prefix[len - 3] = '\0';
+    return !(len - 3 >= 3 && !strcmp(prefix + len - 6, " RT"));
+}
+
+static int pmp_agent(const char *p) {
+    if (!strncmp(p, "EACC", 4)) return AG_ECPU;
+    if (!strncmp(p, "PACC", 4) || !strncmp(p, "MACC", 4)) return AG_PCPU;
+    return classify(p);
+}
+
+static int pmp_group(const char *prefix) {
+    for (int k = 0; k < g.ngroups; k++)
+        if (!strcmp(g.group_name[k], prefix)) return k;
+    return -1;
+}
+
+/* Mean GB/s of a histogram over ticks sampling ticks (its own when 0), and the share of its own
+ * ticks in the top bucket. Bucket names are their GB/s ("  4GB/s"), evenly spaced. */
+static double pmp_gbs(CFDictionaryRef ch, double ticks, double *top_share) {
+    int32_t n = ior.states(ch);
+    char st[32];
+    double v0 = 0, step = 0, sum = 0, cnt = 0, top = -1, top_ticks = 0;
+    for (int32_t k = 0; k < n && k < 2; k++) {
+        double v = atof(cstr(ior.state_name(ch, k), st, sizeof st));
+        if (k == 0) v0 = v;
+        else step = v - v0;
+    }
+    if (step <= 0) step = v0;
+    for (int32_t k = 0; k < n; k++) {
+        double v = atof(cstr(ior.state_name(ch, k), st, sizeof st)), r = (double)ior.residency(ch, k);
+        if (r <= 0) continue;
+        double mid = v - step / 2;
+        sum += (mid > 0 ? mid : 0) * r;
+        cnt += r;
+        if (v >= top) {
+            top = v;
+            top_ticks = r;
+        }
+    }
+    *top_share = cnt > 0 && top >= v0 + step * (n - 1) - 1e-9 ? top_ticks / cnt : 0;
+    return cnt > 0 ? sum / (ticks > 0 ? ticks : cnt) : 0;
+}
+
+static bool pmp_open(void) {
+    static const char *const groups[] = {"PMP", "PMP0", "PMP1"}; /* PMP0 on an M5 Max */
+    if (!ior.format || !ior.states || !ior.state_name || !ior.residency) return false;
+    for (size_t gi = 0; gi < sizeof groups / sizeof groups[0]; gi++) {
+        CFStringRef gn = CFStringCreateWithCString(kCFAllocatorDefault, groups[gi], kCFStringEncodingUTF8);
+        CFDictionaryRef ch = ior.copy_group(gn, CFSTR("DCS BW"), 0, 0, 0);
+        CFRelease(gn);
+        if (!ch) continue;
+        CFArrayRef all = CFDictionaryGetValue(ch, CFSTR("IOReportChannels"));
+        CFMutableArrayRef keep = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+        char name[64], prefix[48];
+        bool wr, total = false, split[2] = {false, false};
+        int ncpu = 0, nreq = 0;
+        for (CFIndex i = 0; all && CFGetTypeID(all) == CFArrayGetTypeID() && i < CFArrayGetCount(all); i++) {
+            CFDictionaryRef c = CFArrayGetValueAtIndex(all, i);
+            cstr(ior.name(c), name, sizeof name);
+            if (!strcmp(name, "AMCC RD+WR")) {
+                CFArrayAppendValue(keep, c);
+                total = true;
+                continue;
+            }
+            if (!pmp_name(name, prefix, sizeof prefix, &wr)) continue;
+            CFArrayAppendValue(keep, c);
+            if (!strcmp(prefix, "AMCC")) {
+                total = split[wr] = true;
+                continue;
+            }
+            nreq++;
+            int a = pmp_agent(prefix);
+            if ((a == AG_PCPU || a == AG_ECPU) && !wr && ncpu < MAX_GROUPS) {
+                copy_str(g.group_name[ncpu], sizeof g.group_name[0], prefix);
+                g.group_agent[ncpu++] = a;
+            }
+        }
+        CFMutableDictionaryRef want = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, ch);
+        CFDictionarySetValue(want, CFSTR("IOReportChannels"), keep);
+        CFRelease(keep);
+        CFRelease(ch);
+        CFMutableDictionaryRef subbed = NULL;
+        IOReportSubscriptionRef sub = total ? ior.subscribe(NULL, want, &subbed, 0, NULL) : NULL;
+        CFRelease(want);
+        if (!sub || !subbed) continue;
+        g.sub = sub;
+        g.subbed = subbed;
+        g.ngroups = ncpu;
+        g.nchan = 0;
+        g.approx = true;
+        /* An M3 Max on macOS 27 has the chip total alone, with neither parts nor a read/write split. */
+        g.chip_only = nreq == 0;
+        g.rw_total_only = !split[0] || !split[1];
+        map_cpus();
+        g.prev = ior.samples(g.sub, g.subbed, NULL);
+        g.prev_at = mono_sec();
+        CFArrayRef arr = g.prev ? CFDictionaryGetValue(g.prev, CFSTR("IOReportChannels")) : NULL;
+        double top_rw = 0;
+        for (CFIndex i = 0; arr && i < CFArrayGetCount(arr); i++) {
+            CFDictionaryRef c = CFArrayGetValueAtIndex(arr, i);
+            int32_t n = ior.states(c);
+            if (n <= 0) continue;
+            char st[32];
+            double top = atof(cstr(ior.state_name(c, n - 1), st, sizeof st));
+            cstr(ior.name(c), name, sizeof name);
+            if (!strcmp(name, "AMCC RD")) g.pmp_top = top;
+            else if (!strcmp(name, "AMCC RD+WR")) top_rw = top;
+        }
+        if (g.pmp_top <= 0) g.pmp_top = top_rw;
+        return g.prev != NULL;
+    }
+    return false;
+}
+
+/* The same as amc_read for the histograms, which give rates: since is when *base was taken. */
+static double pmp_read(CFDictionaryRef *base, double since, amc_t *out) {
+    memset(out, 0, sizeof *out);
+    CFDictionaryRef cur = ior.samples(g.sub, g.subbed, NULL);
+    double at = mono_sec(), dt = at - since;
+    if (!cur) return at;
+    CFDictionaryRef d = *base ? ior.delta(*base, cur, NULL) : NULL;
+    if (*base) CFRelease(*base);
+    *base = cur;
+    if (!d) return at;
+    CFArrayRef arr = CFDictionaryGetValue(d, CFSTR("IOReportChannels"));
+    CFIndex n = arr ? CFArrayGetCount(arr) : 0;
+    char name[64], prefix[48];
+    double ticks = 0, share, total = -1, chip_rd = 0, chip_wr = 0, sat[2][MAX_GROUPS] = {{0}};
+    for (CFIndex i = 0; i < n; i++) {
+        CFDictionaryRef ch = CFArrayGetValueAtIndex(arr, i);
+        if (strcmp(cstr(ior.name(ch), name, sizeof name), "AMCC RD")) continue;
+        for (int32_t k = 0; k < ior.states(ch); k++) ticks += (double)ior.residency(ch, k);
+    }
+    for (CFIndex i = 0; dt > 0 && i < n; i++) {
+        CFDictionaryRef ch = CFArrayGetValueAtIndex(arr, i);
+        if (ior.format(ch) != 2) continue; /* kIOReportFormatState */
+        cstr(ior.name(ch), name, sizeof name);
+        double bytes = pmp_gbs(ch, ticks, &share) * 1e9 * dt;
+        bool wr;
+        if (!strcmp(name, "AMCC RD+WR")) {
+            total = bytes;
+            continue;
+        }
+        if (!pmp_name(name, prefix, sizeof prefix, &wr)) continue;
+        if (!strcmp(prefix, "AMCC")) {
+            *(wr ? &chip_wr : &chip_rd) = bytes;
+            continue;
+        }
+        int a = pmp_agent(prefix), k = a == AG_PCPU || a == AG_ECPU ? pmp_group(prefix) : -1;
+        if (wr) out->wr[a] += bytes;
+        else out->rd[a] += bytes;
+        if (k < 0) continue;
+        if (wr) out->gwr[k] += bytes;
+        else out->grd[k] += bytes;
+        sat[wr][k] = share;
+    }
+    CFRelease(d);
+
+    /* The combined channel carries one floor rather than two, so it sets the total. */
+    if (total >= 0 && chip_rd + chip_wr > 0) {
+        out->rd_all = total * chip_rd / (chip_rd + chip_wr);
+        out->wr_all = total - out->rd_all;
+    } else if (total >= 0) { /* the sum alone: dramtop shows no read/write split then */
+        out->rd_all = total;
+    } else {
+        out->rd_all = chip_rd;
+        out->wr_all = chip_wr;
+    }
+    double rest[2] = {out->rd_all, out->wr_all};
+    for (int a = 0; a < AG_N; a++) rest[0] -= out->rd[a], rest[1] -= out->wr[a];
+    /* A busy CPU cluster saturates its histograms long before the memory controller's do, so the
+     * traffic that no requester accounts for goes to the saturated clusters. */
+    for (int w = 0; w < 2; w++) {
+        double *agent = w ? out->wr : out->rd, *group = w ? out->gwr : out->grd, sum_sat = 0;
+        if (rest[w] <= 0) continue;
+        for (int k = 0; k < g.ngroups; k++)
+            if (sat[w][k] >= PMP_SATURATED) sum_sat += sat[w][k];
+        if (sum_sat == 0) agent[AG_OTHER] += rest[w];
+        for (int k = 0; sum_sat > 0 && k < g.ngroups; k++) {
+            if (sat[w][k] < PMP_SATURATED) continue;
+            double add = rest[w] * sat[w][k] / sum_sat;
+            group[k] += add;
+            agent[g.group_agent[k]] += add;
+        }
+    }
+    return at;
+}
+
+/* Bytes since *base, which was taken at since. */
+static double chip_read(CFDictionaryRef *base, double since, amc_t *out) {
+    return g.approx ? pmp_read(base, since, out) : amc_read(base, out);
+}
+
+/* ------------------------------------------------------------------ */
 /* Per-process CPU counter sampling (kperf + kdebug, root only)        */
 /* ------------------------------------------------------------------ */
 
@@ -646,7 +878,7 @@ static void slice_close(void) {
     size_t bl = sizeof bi;
     if (kd(KERN_KDGETBUF, -1, &bi, &bl) == 0 && bi.nolog) kd(KERN_KDENABLE, 1, NULL, NULL);
     amc_t m;
-    g.prev_at = amc_read(&g.prev, &m);
+    g.prev_at = chip_read(&g.prev, g.prev_at, &m);
     amc_add(&kp.ivl_amc, &m);
 
     slice_t *s = &kp.ring[kp.ring_head];
@@ -868,17 +1100,17 @@ static bool kp_start(void) {
     if (g.ngroups == 0) return kp_fail("unknown CPU clusters");
     if (!kp_load()) return kp_fail("kperf not found");
     int forced = 0;
-    if (kp.force_all_ctrs_get(&forced)) return kp_fail("no access to CPU counters");
-    if (forced) return kp_fail("CPU counters in use by another tool");
+    if (kp.force_all_ctrs_get(&forced)) return kp_fail("no counter access");
+    if (forced) return kp_fail("CPU counters in use");
 
     void *db = NULL, *cfg = NULL, *ev = NULL;
     if (kp.db_create(NULL, &db) || kp.config_create(db, &cfg) || kp.config_force_counters(cfg))
-        return kp_fail("no PMU event database for this CPU");
+        return kp_fail("no event database");
     for (int e = 0; e < EV_N; e++)
         if (kp.db_event(db, EVENT_NAME[e], &ev) || kp.config_add_event(cfg, &ev, 0, NULL))
-            return kp_fail("CPU lacks the L1D miss events");
+            return kp_fail("no L1D miss events");
     if (kp.db_event(db, TRIGGER_EVENT, &ev) || kp.config_add_trigger(cfg, &ev, 0, PMI_PERIOD, NULL))
-        return kp_fail("CPU lacks a cycle event");
+        return kp_fail("no cycle event");
 
     size_t nreg = 0, map[MAX_COUNTERS] = {0};
     uint64_t regs[MAX_COUNTERS] = {0}, periods[MAX_COUNTERS] = {0};
@@ -886,24 +1118,24 @@ static bool kp_start(void) {
     if (kp.config_classes(cfg, &kp.classes) || kp.config_kpc_count(cfg, &nreg) || nreg > MAX_COUNTERS ||
         kp.config_kpc_map(cfg, map, sizeof map) || kp.config_kpc(cfg, regs, sizeof regs) ||
         kp.config_periods(cfg, periods, sizeof periods))
-        return kp_fail("cannot configure CPU counters");
+        return kp_fail("counter setup failed");
     for (int e = 0; e < EV_N; e++) kp.map[e] = map[e];
     for (size_t i = 0; i < nreg; i++) actions[i] = periods[i] ? 1 : 0;
 
     kp.forced = true;
     if (kp.force_all_ctrs_set(1) || kp.set_config(kp.classes, regs) || kp.set_period(KPC_CONFIGURABLE, periods) ||
         kp.set_actionid(KPC_CONFIGURABLE, actions))
-        return kp_fail("cannot configure CPU counters");
+        return kp_fail(errno == EPERM ? "CPU counters locked" : "counter setup failed");
     kp.nctr = kp.counter_count(kp.classes);
     if (kp.nctr == 0 || kp.nctr > MAX_COUNTERS) return kp_fail("no CPU counters");
     for (int e = 0; e < EV_N; e++)
-        if (kp.map[e] >= kp.nctr) return kp_fail("cannot configure CPU counters");
+        if (kp.map[e] >= kp.nctr) return kp_fail("counter setup failed");
     /* The action count can only grow, so use the maximum like other kperf clients. */
     if (kp.action_count_set(32) || kp.action_samplers_set(1, KPERF_SAMPLER_PMC_CPU | KPERF_SAMPLER_TH_INFO))
-        return kp_fail("cannot start kperf sampling");
+        return kp_fail("kperf start failed");
     kp.cswitch = kp_cswitch();
     if (kp.sample_set(1) || kp.set_counting(kp.classes))
-        return kp_fail("cannot start kperf sampling");
+        return kp_fail("kperf start failed");
 
     if (kd(KERN_KDREMOVE, -1, NULL, NULL)) {
         char who[64] = "";
@@ -911,7 +1143,7 @@ static bool kp_start(void) {
         if (sysctlbyname("ktrace.configured_by", who, &n, NULL, 0) || !who[0]) snprintf(who, sizeof who, "another tool");
         who[sizeof who - 1] = '\0';
         sanitize(who);
-        snprintf(kp.why_buf, sizeof kp.why_buf, "kernel tracing in use by %s", who);
+        snprintf(kp.why_buf, sizeof kp.why_buf, "tracing in use by %s", who);
         return kp_fail(kp.why_buf);
     }
     kp.tracing = true;
@@ -937,7 +1169,7 @@ static bool kp_start(void) {
     if (kd(KERN_KDSETBUF, KD_RECORDS, NULL, NULL) || kd(KERN_KDSETUP, -1, NULL, NULL) ||
         kd(KERN_KDSETREG, -1, &reg, &rl) || kd(KERN_KDEFLAGS, KDBG_NOWRAP_, NULL, NULL) ||
         kd(KERN_KDENABLE, 1, NULL, NULL) || kd(KERN_KDGETBUF, -1, &bi, &bl) || bi.nkdbufs <= 0)
-        return kp_fail("cannot set up kernel tracing");
+        return kp_fail("tracing setup failed");
 
     kp.nbuf = (size_t)bi.nkdbufs;
     kp.buf = xrealloc(NULL, sizeof(kdbuf_t) * kp.nbuf);
@@ -948,7 +1180,7 @@ static bool kp_start(void) {
     for (int c = 0; c < MAX_CPUS; c++) kp.have[c] = -1;
     if (pthread_create(&kp.thread, NULL, kp_reader, NULL)) {
         kp.thread = 0;
-        return kp_fail("cannot start a thread");
+        return kp_fail("thread start failed");
     }
     atexit(kp_stop);
     kp.on = true;
@@ -1126,18 +1358,17 @@ bool plat_init(const dt_config_t *cfg, dt_info_t *info) {
     g.tick_ns = tb.denom ? (double)tb.numer / (double)tb.denom : 1.0;
     *(void **)&g.coal_usage = dlsym(RTLD_DEFAULT, "coalition_info_resource_usage");
     detect_chip();
-    if (!amc_open()) {
-        fputs("dramtop: the memory controller counters (IOReport \"AMC Stats\") are not available.\n"
-              "  They exist on Apple Silicon Macs; virtual machines do not expose them.\n",
+    if (!amc_open() && !pmp_open()) {
+        fputs("dramtop: this Mac publishes neither memory controller counters (IOReport \"AMC Stats\")\n"
+              "  nor bandwidth histograms (\"PMP\"). Virtual machines do not expose them.\n",
               stderr);
         return false;
     }
-    if (geteuid() != 0)
-        fputs("dramtop: not running as root, so only the whole chip is measured (use sudo for processes)\n", stderr);
     *info = (dt_info_t){
-        .cpu_name = g.cpu_name, .backend = "", .scope = "", .mode = "amc", .ncpus = g.ncpus,
-        .eff_cpus = g.ncpus, .line = g.line, .has_rw = true, .has_gpu = true, .estimated = true,
-        .spec_gbs = g.spec, .nagents = AG_N, .cpu_agents = AG_ECPU + 1, .gpu_agent = AG_GPU,
+        .cpu_name = g.cpu_name, .backend = "", .scope = "", .mode = g.approx ? "pmp" : "amc", .ncpus = g.ncpus,
+        .eff_cpus = g.ncpus, .line = g.line, .has_rw = true, .rw_total_only = g.rw_total_only, .has_gpu = true,
+        .estimated = true, .spec_gbs = g.spec, .nagents = g.chip_only ? 0 : AG_N, .cpu_agents = AG_ECPU + 1,
+        .gpu_agent = AG_GPU,
     };
     for (int a = 0; a < AG_N; a++) info->agent[a] = AGENT_NAME[a];
     return true;
@@ -1155,15 +1386,28 @@ bool plat_has_proc(int pid) { return proc_find(pid) != NULL; }
 void plat_start_system(dt_info_t *info) {
     if (g.cfg.measure_caps) info->gpu_cap_gbs = gpu_probe_gbs(plat_mem_available() / 4);
     amc_t skip;
-    g.prev_at = amc_read(&g.prev, &skip); /* calibration traffic does not count */
+    g.prev_at = chip_read(&g.prev, g.prev_at, &skip); /* calibration traffic does not count */
     kp.ivl_start = g.prev_at;
-    kp_start();
-    snprintf(g.backend, sizeof g.backend, "Apple memory controller counters (processes: %s)",
-             kp.on ? "estimated" : kp.why);
-    snprintf(g.scope, sizeof g.scope, "Whole chip (AMC)");
+    if (g.chip_only) kp.why = "chip total only"; /* nothing to split between processes */
+    else kp_start();
+    if (g.chip_only) {
+        snprintf(g.backend, sizeof g.backend,
+                 "Apple BW histograms (approximate, caps at %.0f GB/s; exact counters locked; chip total only)",
+                 g.pmp_top);
+        snprintf(g.scope, sizeof g.scope, "Whole chip (PMP)");
+    } else if (g.approx) {
+        snprintf(g.backend, sizeof g.backend,
+                 "Apple BW histograms (approximate, caps at %.0f GB/s; exact counters locked; procs: %s)", g.pmp_top,
+                 kp.on ? "rough estimate" : kp.why);
+        snprintf(g.scope, sizeof g.scope, "Whole chip (PMP)");
+    } else {
+        snprintf(g.backend, sizeof g.backend, "Apple memory controller counters (procs: %s)", kp.on ? "estimated" : kp.why);
+        snprintf(g.scope, sizeof g.scope, "Whole chip (AMC)");
+    }
     info->backend = g.backend;
     info->scope = g.scope;
     info->estimated = kp.on;
+    info->no_proc_bw = kp.on ? NULL : kp.why;
 }
 
 static uint64_t coalition_of(int pid) {
@@ -1253,7 +1497,8 @@ void plat_sample(double now, dt_snapshot_t *snap) {
         kp.ivl_start = g.prev_at;
         m = kp.ivl_amc;
         memset(&kp.ivl_amc, 0, sizeof kp.ivl_amc);
-        for (int k = 0; k < g.ngroups; k++) {
+        /* Histogram slices are too coarse to fit per-process ratios on, so they share in proportion. */
+        for (int k = 0; k < g.ngroups && !g.approx; k++) {
             fit_group(k, 0, &fr[k]);
             fit_group(k, 1, &fw[k]);
         }
@@ -1268,7 +1513,7 @@ void plat_sample(double now, dt_snapshot_t *snap) {
         }
     } else {
         double start = g.prev_at;
-        g.prev_at = amc_read(&g.prev, &m);
+        g.prev_at = chip_read(&g.prev, start, &m);
         span = g.prev_at - start;
     }
 
@@ -1280,6 +1525,9 @@ void plat_sample(double now, dt_snapshot_t *snap) {
         p->dgpu = p->primed ? (double)delta(gnow, p->gpu) : 0;
         p->gpu = gnow;
         p->pub.gpu_sec = p->dgpu * 1e-9;
+        /* The GPU's traffic is split by GPU time alone, so this part needs no CPU counters. */
+        double gpu_share = gpu_all > 0 ? p->dgpu / gpu_all : 0;
+        p->pub.c.gpu = (m.rd[AG_GPU] + m.wr[AG_GPU]) * gpu_share / line;
         p->pub.denied = !kp.on || !p->counted;
         p->pub.has_ipc = p->counted && p->primed;
         p->pub.has_bw = kp.on && p->counted && p->primed && span > 1e-3;
@@ -1303,11 +1551,10 @@ void plat_sample(double now, dt_snapshot_t *snap) {
         }
         p->pub.c.cpu_read = rd / line;
         sum_cpu += p->pub.c.cpu_read;
-        if (gpu_all > 0 && p->dgpu > 0) {
-            double share = p->dgpu / gpu_all;
-            rd += m.rd[AG_GPU] * share;
-            wr += m.wr[AG_GPU] * share;
-            weighted += (m.rd[AG_GPU] + m.wr[AG_GPU]) * share * share;
+        if (gpu_share > 0) {
+            rd += m.rd[AG_GPU] * gpu_share;
+            wr += m.wr[AG_GPU] * gpu_share;
+            weighted += (m.rd[AG_GPU] + m.wr[AG_GPU]) * gpu_share * gpu_share;
         }
         if (p->ane_share > 0) {
             double share = p->ane_share;
@@ -1316,6 +1563,7 @@ void plat_sample(double now, dt_snapshot_t *snap) {
             weighted += (m.rd[AG_ANE] + m.wr[AG_ANE]) * share * share;
         }
         p->pub.confidence = rd + wr > 0 ? weighted / (rd + wr) : 1.0;
+        if (g.approx && p->pub.confidence > APPROX_CONFIDENCE) p->pub.confidence = APPROX_CONFIDENCE;
         p->pub.c.read = rd / line;
         p->pub.c.write = wr / line;
         p->pub.c.total = p->pub.c.read + p->pub.c.write;
@@ -1391,12 +1639,15 @@ void plat_pin_thread(int cpu) {
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 }
 
+/* The histograms saturate, so with them the calibration relies on its own timing alone. */
 void plat_probe_begin(void) {
+    if (g.approx) return;
     amc_t skip;
     amc_read(&g.probe, &skip);
 }
 
 double plat_probe_lines(void) {
+    if (g.approx) return 0;
     amc_t m;
     amc_read(&g.probe, &m);
     return (m.rd[AG_PCPU] + m.rd[AG_ECPU]) / (double)g.line;

@@ -76,6 +76,8 @@ static void test_rules(void) {
     CHECK_INT(diagnose(&m, 0), ST_CONTENTION);
     m = measured(5.0, 700.0, 0.2, 1.0);
     CHECK_INT(diagnose(&m, 0), ST_COMPUTE);
+    m = measured(30.0, 600.0, 0.0, 0.0); /* busy, but no instruction counts to judge by */
+    CHECK_INT(diagnose(&m, 0), ST_ACTIVE);
 
     CHECK_STR(STATE[ST_MEM_BW].label, "MEMORY-BOUND (DRAM BW Saturated)");
     CHECK_STR(STATE[ST_CONTENTION].label, "LOCK-CONTENTION / CFS-THROTTLED");
