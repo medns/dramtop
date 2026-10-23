@@ -54,6 +54,7 @@ sudo dramtop
 - Traffic that a process generates on the GPU and the Neural Engine is included in its bandwidth, so a locally running LLM shows its full bandwidth usage; per-process GPU utilization is also shown
 - Chip-wide utilization is relative to the chip's rated bandwidth. The bandwidth that the CPU and the GPU can each reach is also measured at startup and used to show the utilization of each. A busy GPU whose bandwidth is not saturated is diagnosed as `COMPUTE-BOUND (GPU)`
 - Per-process values are estimates, with counts settled at every context switch. The estimate is close to the actual traffic when a process has a CPU cluster to itself; when several busy processes share a cluster or the GPU, the split may be less accurate and the affected rows are marked `~` or `?`
+- On some newer chips, macOS opens these counters only to Apple's own services. dramtop then switches to an approximate mode by itself: the whole chip and its parts are read from the memory controller's bandwidth histograms, which read low under very heavy traffic. Where macOS publishes only the chip total, only the total is shown. Per-process bandwidth is then only a rough estimate, and only where macOS lets dramtop configure the CPU counters; otherwise only each process's GPU traffic is shown
 
 ## 💻 Usage
 
@@ -92,7 +93,7 @@ Keyboard shortcuts in the full-screen interface: `q` quit, `t` / `Tab` switch vi
 **macOS**
 
 - An Apple Silicon Mac. Virtual machines do not expose the memory controller counters.
-- Per-process data requires `sudo`; without it, only the whole chip and its parts are shown.
+- Per-process bandwidth requires `sudo`; without it, the process list shows only each process's GPU traffic, split by GPU time. `-p` and `-P` can only be used when per-process bandwidth is available. In approximate mode, per-process bandwidth is a rough estimate at best.
 - Per-process sampling uses the CPU counters and kernel tracing, so it is disabled automatically while Instruments' CPU Counters or another tool is using them.
 
 ## 🛠️ Build from Source
