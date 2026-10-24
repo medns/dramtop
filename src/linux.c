@@ -4,8 +4,11 @@
  * Hardware counters come from perf_event_open(2): one set per CPU when the
  * kernel allows it, otherwise one set per thread with inherit=1. DRAM traffic
  * is counted as cache-line fills from memory, split into demand reads and
- * hardware-prefetch fills where the CPU tells them apart. Process names and
- * CPU time come from /proc, CPU quota and throttling from the cgroup files.
+ * hardware-prefetch fills where the CPU tells them apart, and corrected by
+ * what the startup calibration measured. Where the kernel offers the memory
+ * controller's counters, they give the machine's reads and writes, which the
+ * fills divide among processes. Process names and CPU time come from /proc,
+ * CPU quota and throttling from the cgroup files.
  *
  * Copyright (c) 2026 Super Zheng (https://github.com/medns). MIT License.
  */
@@ -33,8 +36,19 @@
 #define IDLE_DETACH_SEC   30.0
 #define ATTACH_RETRY_SEC  30.0
 #define PF_KTHREAD        0x00200000u
+#define MAX_MC            512 /* memory controller counters: events, channels and sockets */
+#define MC_SCALE_MAX      1.5 /* the most traffic that one counted line may stand for */
+#define MC_WRITE_MAX      2.5 /* lines written per RFO: stores into prefetched lines make fewer RFOs */
 
-enum ev_kind { EV_DEMAND, EV_PREFETCH, EV_TOTAL, EV_CYCLES, EV_INSNS, EV_KINDS };
+enum ev_kind { EV_DEMAND, EV_PREFETCH, EV_TOTAL, EV_CYCLES, EV_INSNS, EV_RFO, EV_KINDS };
+enum { MC_RD, MC_WR, MC_IA, MC_KINDS }; /* MC_IA: the requests of the cores */
+
+typedef struct {
+    uint32_t type;
+    uint64_t config;
+    int cpu, kind;
+    double bytes; /* per count */
+} mc_spec_t;
 
 typedef struct {
     uint32_t type;
@@ -88,7 +102,8 @@ static struct {
     unsigned line;
 
     /* PMU */
-    const char *backend;
+    const char *backend, *pmu_name, *lines_name; /* lines_name: what the DRAM events count */
+    char backend_buf[128];
     event_t ev[MAX_EVENTS];
     int nev;
     bool has_split, has_total, kernel_ok;
@@ -96,6 +111,26 @@ static struct {
     int sys_cpus;
     bool sys_on;
     counter_set_t probe;
+    int probe_calls, cal_threads;
+    double probe_t, probe_lines, probe_bytes, probe_secs; /* the timed passes of all calibration threads */
+    double single_lines, single_bytes;                   /* one thread reading alone */
+    double read_scale; /* lines read per counted line, from the calibration; 1 without it */
+    /* Where the counts per line read grow with the number of threads reading, the correction
+     * follows the CPUs that read as much as one calibration thread did. */
+    bool by_readers;
+    double scale_one, scale_all, ref_rate; /* ref_rate: counted lines per second of one calibration thread */
+    counter_set_t *readers;                /* per CPU, when the system-wide counters are not open */
+    double last_sample;
+
+    /* memory controller */
+    const char *mc_root, *mc_vendor;
+    mc_spec_t *mc;
+    int *mc_fd, nmc;
+    snap_t *mc_snap;
+    bool exact, mc_ia;
+    uint64_t rfo_config; /* the RFO requests to L2 of stores, whose lines are written back later; 0 without */
+    bool rfo_on;
+    double write_scale; /* DRAM lines written per RFO */
 
     /* processes, sorted by pid */
     proc_t *procs;
@@ -107,7 +142,7 @@ static struct {
     unsigned long long prev_boot;
     bool cfs_ok;
     long long cfs_periods, cfs_throttled;
-} g;
+} g = {.read_scale = 1.0, .mc_root = "/sys/bus/event_source/devices"};
 
 /* ------------------------------------------------------------------ */
 /* Small helpers                                                       */
@@ -211,25 +246,28 @@ static void add_cpu(int **ids, int *n, int *cap, int cpu) {
     (*ids)[(*n)++] = cpu;
 }
 
-/* CPU ids can be sparse ("0-31,64-95"), so parse the online list. */
+/* CPU lists can be sparse: "0-31,64-95". */
+static void parse_cpu_list(const char *s, int **ids, int *n, int *cap) {
+    const char *p = s;
+    char *end;
+    for (;;) {
+        long a = strtol(p, &end, 10), b;
+        if (end == p) break;
+        b = a;
+        if (*end == '-') {
+            p = end + 1;
+            b = strtol(p, &end, 10);
+        }
+        for (long c = a; c <= b && c < 65536; c++) add_cpu(ids, n, cap, (int)c);
+        if (*end != ',') break;
+        p = end + 1;
+    }
+}
+
 static void detect_cpus(void) {
     char buf[4096];
     int *ids = NULL, n = 0, cap = 0;
-    if (read_file("/sys/devices/system/cpu/online", buf, sizeof buf) > 0) {
-        char *p = buf, *end;
-        for (;;) {
-            long a = strtol(p, &end, 10), b;
-            if (end == p) break;
-            b = a;
-            if (*end == '-') {
-                p = end + 1;
-                b = strtol(p, &end, 10);
-            }
-            for (long c = a; c <= b && c < 65536; c++) add_cpu(&ids, &n, &cap, (int)c);
-            if (*end != ',') break;
-            p = end + 1;
-        }
-    }
+    if (read_file("/sys/devices/system/cpu/online", buf, sizeof buf) > 0) parse_cpu_list(buf, &ids, &n, &cap);
     if (n == 0) {
         long c = sysconf(_SC_NPROCESSORS_ONLN);
         for (long i = 0; i < (c > 0 ? c : 1); i++) add_cpu(&ids, &n, &cap, (int)i);
@@ -355,11 +393,34 @@ static uint64_t total_lines(const uint64_t acc[EV_KINDS]) {
 }
 
 static void to_counts(const uint64_t acc[EV_KINDS], dt_counts_t *c) {
-    c->total = (double)total_lines(acc);
-    c->demand = (double)acc[EV_DEMAND];
-    c->prefetch = g.has_total ? c->total - c->demand : (double)acc[EV_PREFETCH];
+    double total = (double)total_lines(acc), demand = (double)acc[EV_DEMAND];
+    c->read = total * g.read_scale;
+    c->write = (double)acc[EV_RFO] * g.write_scale;
+    c->total = c->read + c->write;
+    c->demand = demand * g.read_scale;
+    c->prefetch = (g.has_total ? total - demand : (double)acc[EV_PREFETCH]) * g.read_scale;
     c->cycles = (double)acc[EV_CYCLES];
     c->insns = (double)acc[EV_INSNS];
+}
+
+/* How many lines a streaming load read per line the events counted, when that is plausible. */
+static double read_scale_of(double lines, double bytes) {
+    double k = bytes > 0 ? lines * g.line / bytes : 0.0;
+    return k >= 0.8 && k <= 2.0 ? 1.0 / k : 1.0;
+}
+
+/* How much of a calibration thread's reading a CPU did, up to all of it. */
+static double reader_weight(double lines, double dt) {
+    double w = dt > 0 && g.ref_rate > 0 ? lines / dt / g.ref_rate : 0.0;
+    return w > 1.0 ? 1.0 : w;
+}
+
+/* The counted lines per line read, between one thread and all calibration threads, for the
+ * number of CPUs reading. */
+static double readers_scale(double readers) {
+    double f = g.cal_threads > 1 ? (readers - 1.0) / (g.cal_threads - 1) : 1.0;
+    f = f < 0.0 ? 0.0 : f > 1.0 ? 1.0 : f;
+    return 1.0 / (1.0 / g.scale_one + (1.0 / g.scale_all - 1.0 / g.scale_one) * f);
 }
 
 #if defined(__aarch64__)
@@ -382,6 +443,7 @@ static bool arm_event_listed(const char *name) {
 static void select_events(const cpu_id_t *id, bool generic) {
     int n = 0;
     g.backend = NULL;
+    g.rfo_config = 0;
     if (!generic && id->vendor == V_AMD && id->family >= 0x17) {
         bool zen4 = id->family >= 0x1a ||
                     (id->family == 0x19 && ((id->model >= 0x10 && id->model <= 0x1f) ||
@@ -392,24 +454,32 @@ static void select_events(const cpu_id_t *id, bool generic) {
          * which 0x5a already counts, so only the L2 prefetcher bits are selected. */
         g.ev[n++] = (event_t){PERF_TYPE_RAW, zen4 ? 0x1f72 : 0xff72, EV_PREFETCH};
         g.backend = "AMD Zen PMU (demand + L1/L2 HW prefetch DRAM fills)";
+        g.pmu_name = "AMD Zen PMU", g.lines_name = "DRAM fills";
     } else if (!generic && id->vendor == V_INTEL) {
         g.ev[n++] = (event_t){PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES, EV_TOTAL}; /* LONGEST_LAT_CACHE.MISS */
         if (id->family == 6) g.ev[n++] = (event_t){PERF_TYPE_RAW, 0x20d1, EV_DEMAND};    /* MEM_LOAD_RETIRED.L3_MISS */
         g.backend = "Intel PMU (LLC misses: demand loads + prefetch/other)";
+        g.pmu_name = "Intel PMU", g.lines_name = "LLC misses";
+        /* L2_RQSTS.ALL_RFO from Haswell on; Sandy Bridge and Ivy Bridge encode it otherwise. */
+        bool snb = id->model == 0x2a || id->model == 0x2d || id->model == 0x3a || id->model == 0x3e;
+        g.rfo_config = id->family == 6 && !snb ? 0xe224 : 0;
     }
 #if defined(__aarch64__)
     /* The kernel accepts any raw ARM event; only sysfs tells whether it is implemented. */
     else if (!generic && arm_event_listed("ll_cache_miss_rd")) {
         g.ev[n++] = (event_t){PERF_TYPE_RAW, 0x37, EV_TOTAL};
         g.backend = "Arm PMUv3 (LL_CACHE_MISS_RD)";
+        g.pmu_name = "Arm PMUv3", g.lines_name = "LL_CACHE_MISS_RD";
     } else if (!generic && arm_event_listed("l2d_cache_refill")) {
         g.ev[n++] = (event_t){PERF_TYPE_RAW, 0x17, EV_TOTAL};
         g.backend = "Arm PMUv3 (L2D_CACHE_REFILL)";
+        g.pmu_name = "Arm PMUv3", g.lines_name = "L2D_CACHE_REFILL";
     }
 #endif
     if (!g.backend) {
         g.ev[n++] = (event_t){PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES, EV_TOTAL};
         g.backend = "Generic PMU (LLC misses)";
+        g.pmu_name = "Generic PMU", g.lines_name = "LLC misses";
     }
     g.ev[n++] = (event_t){PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, EV_CYCLES};
     g.ev[n++] = (event_t){PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, EV_INSNS};
@@ -447,7 +517,7 @@ static bool pmu_fail(int err) {
     case EOPNOTSUPP:
     case EINVAL:
         fputs("dramtop: hardware performance counters are not available on this system.\n"
-              "  Virtual machines need a virtualized PMU; most cloud VMs and WSL2 do not expose one.\n",
+              "  Virtual machines need a virtualized PMU, which most cloud VMs do not provide.\n",
               stderr);
         break;
     default:
@@ -489,6 +559,223 @@ static void sys_open(void) {
         cs_read(&g.sys[c], scratch);
     }
     g.sys_on = g.sys_cpus > 0;
+}
+
+/* Per-CPU DRAM counters for the correction alone, where a process filter leaves the
+ * system-wide ones closed. */
+static void readers_open(void) {
+    int fd = perf_open(&g.ev[0], -1, g.cpus[0], false);
+    if (fd < 0) return;
+    close(fd);
+    g.readers = xrealloc(NULL, (size_t)g.ncpus * sizeof *g.readers);
+    uint64_t scratch[EV_KINDS] = {0};
+    for (int c = 0; c < g.ncpus; c++) {
+        cs_init(&g.readers[c]);
+        for (int i = 0; i < g.nev; i++)
+            if (g.ev[i].kind <= EV_TOTAL) g.readers[c].fd[i] = perf_open(&g.ev[i], -1, g.cpus[c], false);
+        cs_read(&g.readers[c], scratch);
+    }
+}
+
+/* Adds the per-CPU counts to sum; returns how many CPUs read from DRAM as one calibration
+ * thread did. */
+static double read_cpus(counter_set_t *sets, uint64_t sum[EV_KINDS], double dt) {
+    double readers = 0.0;
+    for (int c = 0; c < g.ncpus; c++) {
+        uint64_t acc[EV_KINDS] = {0};
+        cs_read(&sets[c], acc);
+        for (int k = 0; k < EV_KINDS; k++) sum[k] += acc[k];
+        readers += reader_weight((double)total_lines(acc), dt);
+    }
+    return readers;
+}
+
+/* ------------------------------------------------------------------ */
+/* Memory controller counters                                          */
+/* ------------------------------------------------------------------ */
+
+/* Uncore events that count DRAM traffic, by name: Intel clients up to Comet Lake (whose
+ * ia_requests are the cores' share) and from Tiger Lake on, and servers, where Granite Rapids
+ * splits each channel into two schedulers. */
+static const struct {
+    const char *name;
+    int kind;
+} MC_EVENTS[] = {
+    {"data_reads", MC_RD},          {"data_writes", MC_WR},          {"ia_requests", MC_IA},
+    {"data_read", MC_RD},           {"data_write", MC_WR},           {"cas_count_read", MC_RD},
+    {"cas_count_write", MC_WR},     {"cas_count_read_sch0", MC_RD},  {"cas_count_read_sch1", MC_RD},
+    {"cas_count_write_sch0", MC_WR}, {"cas_count_write_sch1", MC_WR},
+};
+
+/* Puts value into the config bits that the PMU's format file gives for field, "config:8-15". */
+static bool mc_field(const char *dir, const char *field, uint64_t value, uint64_t *config) {
+    char path[1024], buf[64];
+    snprintf(path, sizeof path, "%s/format/%s", dir, field);
+    if (read_file(path, buf, sizeof buf) <= 0) return false;
+    int lo, hi, n = sscanf(buf, "config:%d-%d", &lo, &hi);
+    if (n == 1) hi = lo;
+    if (n < 1 || lo < 0 || hi > 63 || hi < lo) return false;
+    uint64_t mask = hi - lo == 63 ? ~0ULL : (1ULL << (hi - lo + 1)) - 1;
+    if (value & ~mask) return false;
+    *config |= value << lo;
+    return true;
+}
+
+/* An event file such as "event=0xff,umask=0x20", placed by the PMU's format files. */
+static bool mc_config(const char *dir, const char *spec, uint64_t *config) {
+    char buf[128], *save = NULL;
+    copy_str(buf, sizeof buf, spec);
+    *config = 0;
+    for (char *t = strtok_r(trim(buf), ",", &save); t; t = strtok_r(NULL, ",", &save)) {
+        char *eq = strchr(t, '=');
+        uint64_t v = 1;
+        if (eq) {
+            *eq = '\0';
+            v = strtoull(eq + 1, NULL, 0);
+        }
+        if (!mc_field(dir, t, v, config)) return false;
+    }
+    return true;
+}
+
+static double mc_bytes(const char *dir, const char *event) {
+    char path[1024], buf[64];
+    snprintf(path, sizeof path, "%s/events/%s.scale", dir, event);
+    double scale = read_file(path, buf, sizeof buf) > 0 ? strtod(buf, NULL) : 0.0;
+    snprintf(path, sizeof path, "%s/events/%s.unit", dir, event);
+    bool mib = read_file(path, buf, sizeof buf) > 0 && !strcmp(trim(buf), "MiB");
+    return scale > 0 && mib ? scale * 1048576.0 : 64.0;
+}
+
+static int mc_add(mc_spec_t *out, int n, int max, const mc_spec_t *s, const int *cpus, int ncpu) {
+    for (int c = 0; c < ncpu && n < max; c++) {
+        out[n] = *s;
+        out[n++].cpu = cpus[c];
+    }
+    return n;
+}
+
+/* The memory controller counters the kernel offers: one per PMU, event and CPU of the PMU's
+ * cpumask, each CPU standing for its socket or NUMA node. AMD's memory controllers (Zen 4 on)
+ * list no events, so the CAS commands for reads and for writes are encoded from the format. */
+static int mc_find(mc_spec_t *out, int max, bool *amd) {
+    DIR *d = opendir(g.mc_root);
+    if (!d) return 0;
+    int n = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        bool intel = !strncmp(de->d_name, "uncore_imc", 10), umc = !strncmp(de->d_name, "amd_umc_", 8);
+        if (!intel && !umc) continue;
+        char dir[512], path[1024], buf[4096];
+        snprintf(dir, sizeof dir, "%s/%s", g.mc_root, de->d_name);
+        long long type;
+        snprintf(path, sizeof path, "%s/type", dir);
+        if (!read_ll(path, &type)) continue;
+        int *cpus = NULL, ncpu = 0, cap = 0;
+        snprintf(path, sizeof path, "%s/cpumask", dir);
+        if (read_file(path, buf, sizeof buf) > 0) parse_cpu_list(buf, &cpus, &ncpu, &cap);
+        mc_spec_t s = {.type = (uint32_t)type};
+        for (size_t e = 0; intel && e < sizeof MC_EVENTS / sizeof MC_EVENTS[0]; e++) {
+            snprintf(path, sizeof path, "%s/events/%s", dir, MC_EVENTS[e].name);
+            if (read_file(path, buf, sizeof buf) <= 0 || !mc_config(dir, buf, &s.config)) continue;
+            s.kind = MC_EVENTS[e].kind;
+            s.bytes = mc_bytes(dir, MC_EVENTS[e].name);
+            n = mc_add(out, n, max, &s, cpus, ncpu);
+        }
+        for (int kind = MC_RD; umc && kind <= MC_WR; kind++) {
+            s.config = 0;
+            if (!mc_field(dir, "event", 0x0a, &s.config) ||
+                !mc_field(dir, "rdwrmask", kind == MC_RD ? 1 : 2, &s.config))
+                break;
+            s.kind = kind;
+            s.bytes = 64.0;
+            n = mc_add(out, n, max, &s, cpus, ncpu);
+            *amd = true;
+        }
+        free(cpus);
+    }
+    closedir(d);
+    return n;
+}
+
+static void mc_close(void) {
+    for (int i = 0; i < g.nmc; i++) close(g.mc_fd[i]);
+    free(g.mc);
+    free(g.mc_fd);
+    free(g.mc_snap);
+    g.mc = NULL;
+    g.mc_fd = NULL;
+    g.mc_snap = NULL;
+    g.nmc = 0;
+}
+
+/* All of them or none: without one channel, the totals would be wrong. */
+static bool mc_open(void) {
+    mc_spec_t spec[MAX_MC];
+    bool amd = false, rd = false, wr = false, ia = false;
+    int n = mc_find(spec, MAX_MC, &amd);
+    for (int i = 0; i < n; i++) {
+        rd |= spec[i].kind == MC_RD;
+        wr |= spec[i].kind == MC_WR;
+        ia |= spec[i].kind == MC_IA;
+    }
+    if (!rd || !wr || n == MAX_MC) return false; /* MAX_MC: some may not have fit */
+    g.mc = xrealloc(NULL, (size_t)n * sizeof *g.mc);
+    g.mc_fd = xrealloc(NULL, (size_t)n * sizeof *g.mc_fd);
+    g.mc_snap = xrealloc(NULL, (size_t)n * sizeof *g.mc_snap);
+    for (int i = 0; i < n; i++) {
+        struct perf_event_attr a;
+        memset(&a, 0, sizeof a);
+        a.size = sizeof a;
+        a.type = spec[i].type;
+        a.config = spec[i].config;
+        a.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
+        int fd = (int)syscall(__NR_perf_event_open, &a, -1, spec[i].cpu, -1, PERF_FLAG_FD_CLOEXEC);
+        if (fd < 0) {
+            mc_close();
+            return false;
+        }
+        g.mc[g.nmc] = spec[i];
+        g.mc_fd[g.nmc] = fd;
+        memset(&g.mc_snap[g.nmc], 0, sizeof g.mc_snap[0]);
+        ctr_delta(fd, &g.mc_snap[g.nmc++]);
+    }
+    g.mc_vendor = amd ? "AMD" : "Intel";
+    g.mc_ia = ia;
+    return true;
+}
+
+/* Bytes since the previous call, by kind. */
+static void mc_read(double bytes[MC_KINDS]) {
+    for (int k = 0; k < MC_KINDS; k++) bytes[k] = 0.0;
+    for (int i = 0; i < g.nmc; i++)
+        bytes[g.mc[i].kind] += (double)ctr_delta(g.mc_fd[i], &g.mc_snap[i]) * g.mc[i].bytes;
+}
+
+/* With the memory controller, writes go to the processes whose stores asked for lines (RFOs),
+ * counted in place of the demand loads, whose split the read/write view does not show; the
+ * counters per CPU stay as few as before. */
+static bool use_rfo(void) {
+    for (int i = 0; g.rfo_config && i < g.nev; i++) {
+        if (g.ev[i].kind != EV_DEMAND) continue;
+        g.ev[i] = (event_t){PERF_TYPE_RAW, g.rfo_config, EV_RFO};
+        g.has_split = false;
+        return true;
+    }
+    return false;
+}
+
+/* Each counted line stands for its share of the cores' traffic, writes included; the share is
+ * capped, so that traffic which causes no misses, such as non-temporal stores and DMA, is left
+ * unattributed. */
+static double mc_scale(double cores, double counted, double *conf) {
+    double s = counted > 0 ? cores / counted : 0.0;
+    *conf = 1.0;
+    if (s > MC_SCALE_MAX) {
+        *conf = MC_SCALE_MAX / s;
+        s = MC_SCALE_MAX;
+    }
+    return s;
 }
 
 /* ------------------------------------------------------------------ */
@@ -572,18 +859,42 @@ void plat_pin_thread(int cpu) {
 /* inherit=1 includes the fills of every thread this process creates afterwards. */
 void plat_probe_begin(void) {
     cs_init(&g.probe);
+    g.probe_calls = 0;
+    g.probe_t = os_now();
+    g.probe_lines = g.probe_bytes = g.probe_secs = g.single_lines = g.single_bytes = 0;
     for (int i = 0; i < g.nev; i++)
         if (g.ev[i].kind <= EV_TOTAL) g.probe.fd[i] = perf_open(&g.ev[i], 0, -1, true);
 }
 
-double plat_probe_lines(double bytes) {
-    (void)bytes;
+/* The first call ends the first touch and the second the warm-up pass; the timed passes of all
+ * threads follow, then one thread alone. The lines returned include the correction, so that the
+ * peak measured from them matches the corrected samples. */
+double plat_probe_lines(double bytes, int threads) {
     uint64_t acc[EV_KINDS] = {0};
     cs_read(&g.probe, acc);
-    return (double)total_lines(acc);
+    double lines = (double)total_lines(acc), t = os_now();
+    int call = g.probe_calls++;
+    if (call == 0) g.cal_threads = threads;
+    if (threads < g.cal_threads) {
+        g.single_lines += bytes > 0 ? lines : 0.0;
+        g.single_bytes += bytes;
+    } else if (call >= 2) {
+        g.probe_lines += lines;
+        g.probe_bytes += bytes;
+        g.probe_secs += t - g.probe_t;
+    }
+    g.probe_t = t;
+    return lines * read_scale_of(g.probe_lines, g.probe_bytes);
 }
 
-void plat_probe_end(void) { cs_close(&g.probe); }
+void plat_probe_end(void) {
+    g.read_scale = g.scale_all = read_scale_of(g.probe_lines, g.probe_bytes);
+    g.scale_one = read_scale_of(g.single_lines, g.single_bytes);
+    double gap = 1.0 / g.scale_all - 1.0 / g.scale_one;
+    g.by_readers = g.scale_all != 1.0 && g.scale_one != 1.0 && g.probe_secs > 0 && (gap > 0.02 || gap < -0.02);
+    if (g.by_readers) g.ref_rate = g.probe_lines / g.probe_secs / g.cal_threads;
+    cs_close(&g.probe);
+}
 
 /* ------------------------------------------------------------------ */
 /* Process tracking                                                    */
@@ -825,6 +1136,7 @@ static void scan_procs(double now) {
 
 const char plat_name[] = "Linux";
 const bool plat_pid_children = true;
+const bool plat_cal_single = true;
 
 bool plat_init(const dt_config_t *cfg, dt_info_t *info) {
     g.cfg = *cfg;
@@ -850,13 +1162,43 @@ void plat_scan(double now) { scan_procs(now); }
 bool plat_has_proc(int pid) { return proc_find((pid_t)pid) != NULL; }
 
 void plat_start_system(dt_info_t *info) {
+    /* The events are settled before any counters open: the processes' open on their first sample. */
+    g.exact = !(g.cfg.filter_pid > 0 || g.cfg.filter_name) && mc_open();
+    g.rfo_on = g.exact && use_rfo();
     sys_open();
-    if (g.sys_on)
-        snprintf(g.scope, sizeof g.scope, "Per-CPU System PMU (pid=-1, %d CPUs, %s)", g.sys_cpus,
-                 g.kernel_ok ? "Kernel+User" : "User");
-    else snprintf(g.scope, sizeof g.scope, "All Processes (Thread-PMU Container Mode)");
+    if (g.exact && !g.sys_on) {
+        mc_close();
+        g.exact = g.rfo_on = false;
+    }
+    info->has_split = g.has_split;
+    if (g.exact) { /* the memory controller sets every sample's scale */
+        g.by_readers = false;
+        info->has_rw = info->rw_system_only = info->estimated = true;
+        snprintf(g.backend_buf, sizeof g.backend_buf, "%s memory controller (procs: estimated from %s%s)", g.mc_vendor,
+                 g.lines_name, g.rfo_on ? " and RFOs" : "");
+    } else {
+        if (g.by_readers && !g.sys_on) readers_open();
+        g.by_readers = g.by_readers && (g.sys_on || g.readers);
+        if (g.by_readers) {
+            double lo = g.scale_all < g.scale_one ? g.scale_all : g.scale_one, hi = g.scale_all + g.scale_one - lo;
+            snprintf(g.backend_buf, sizeof g.backend_buf, "%s (%s x%.2f to x%.2f, from the startup calibration)",
+                     g.pmu_name, g.lines_name, lo, hi);
+        } else if (g.read_scale != 1.0) {
+            snprintf(g.backend_buf, sizeof g.backend_buf, "%s (%s x%.2f, from the startup calibration)", g.pmu_name,
+                     g.lines_name, g.read_scale);
+        }
+    }
+    if (g.backend_buf[0]) info->backend = g.backend_buf;
+    g.last_sample = os_now();
+    const char *who = g.kernel_ok ? "Kernel+User" : "User";
+    if (g.exact)
+        snprintf(g.scope, sizeof g.scope, "Whole machine, processes via per-CPU PMU (%d CPUs, %s)", g.sys_cpus, who);
+    else if (g.sys_on)
+        snprintf(g.scope, sizeof g.scope, "Per-CPU System PMU (pid=-1, %d CPUs, %s)", g.sys_cpus, who);
+    else
+        snprintf(g.scope, sizeof g.scope, "All Processes (Thread-PMU Container Mode)");
     info->scope = g.scope;
-    info->mode = g.sys_on ? "per-cpu" : "per-thread";
+    info->mode = g.exact ? "uncore" : g.sys_on ? "per-cpu" : "per-thread";
 }
 
 void plat_sample(double now, dt_snapshot_t *snap) {
@@ -891,6 +1233,27 @@ void plat_sample(double now, dt_snapshot_t *snap) {
         }
     }
 
+    /* The per-CPU counts come first: they set this sample's correction. */
+    double dt = now - g.last_sample;
+    g.last_sample = now;
+    uint64_t sys[EV_KINDS] = {0}, scratch[EV_KINDS] = {0};
+    double readers = g.sys_on ? read_cpus(g.sys, sys, dt) : g.readers ? read_cpus(g.readers, scratch, dt) : 0.0;
+    double mc[MC_KINDS] = {0}, conf = 1.0;
+    if (g.exact) {
+        mc_read(mc);
+        double counted = (double)total_lines(sys);
+        if (g.rfo_on) { /* writes beyond what the RFOs explain, such as non-temporal ones, stay unattributed */
+            g.read_scale = mc_scale(mc[MC_RD] / g.line, counted, &conf);
+            double w = sys[EV_RFO] ? mc[MC_WR] / g.line / (double)sys[EV_RFO] : 0.0;
+            g.write_scale = w > MC_WRITE_MAX ? MC_WRITE_MAX : w;
+        } else {
+            double cores = g.mc_ia ? mc[MC_IA] : mc[MC_RD] + mc[MC_WR];
+            g.read_scale = mc_scale(cores / g.line, counted, &conf);
+        }
+    } else if (g.by_readers) {
+        g.read_scale = readers_scale(readers);
+    }
+
     uint64_t attributed[EV_KINDS];
     memcpy(attributed, g.pending, sizeof attributed);
     memset(g.pending, 0, sizeof g.pending);
@@ -898,6 +1261,7 @@ void plat_sample(double now, dt_snapshot_t *snap) {
         proc_t *p = &g.procs[i];
         p->pub.cpu_sec = (double)p->dticks / (double)g.clk_tck;
         p->pub.has_bw = false;
+        p->pub.confidence = conf;
         if (!p->attached) continue;
         for (int c = 0; c < p->ncs; c++) cs_read(&p->cs[c], p->acc);
         double pdt = now - p->last_read;
@@ -919,9 +1283,7 @@ void plat_sample(double now, dt_snapshot_t *snap) {
     }
 
     memset(snap, 0, sizeof *snap);
-    uint64_t sys[EV_KINDS] = {0};
     if (g.sys_on) {
-        for (int c = 0; c < g.ncpus; c++) cs_read(&g.sys[c], sys);
         uint64_t rest[EV_KINDS];
         for (int k = 0; k < EV_KINDS; k++) rest[k] = sys[k] > attributed[k] ? sys[k] - attributed[k] : 0;
         to_counts(rest, &snap->other);
@@ -930,6 +1292,14 @@ void plat_sample(double now, dt_snapshot_t *snap) {
         memcpy(sys, attributed, sizeof sys);
     }
     to_counts(sys, &snap->sys);
+    if (g.exact) {
+        snap->sys.read = mc[MC_RD] / g.line;
+        snap->sys.write = mc[MC_WR] / g.line;
+        snap->sys.total = snap->sys.read + snap->sys.write;
+        double listed = (double)total_lines(attributed) * g.read_scale;
+        listed += (double)attributed[EV_RFO] * g.write_scale;
+        snap->other.total = snap->sys.total > listed ? snap->sys.total - listed : 0.0;
+    }
 
     long long periods, throttled;
     if (g.has_quota && read_cfs(&periods, &throttled)) {
@@ -957,4 +1327,6 @@ void plat_shutdown(void) {
     for (int i = 0; i < g.nprocs; i++)
         if (g.procs[i].attached) close_counters(&g.procs[i], false);
     for (int c = 0; g.sys_on && c < g.ncpus; c++) cs_close(&g.sys[c]);
+    for (int c = 0; g.readers && c < g.ncpus; c++) cs_close(&g.readers[c]);
+    mc_close();
 }

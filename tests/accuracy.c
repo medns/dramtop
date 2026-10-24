@@ -230,27 +230,34 @@ static bool run_case(const char *self, const char *dramtop, const char *filter, 
     snprintf(n_s, sizeof n_s, "%d", sc->n);
     snprintf(secs_s, sizeof secs_s, "%.1f", LOAD_SEC);
     char *load_argv[] = {(char *)self, "--load", (char *)sc->mode, n_s, secs_s, NULL};
-    pid_t load = spawn(load_argv, lp[1]);
-    close(lp[1]);
-    pause_for(0.2);
-    char *dt_argv[] = {(char *)dramtop, "-J", "-c", "100", "-P", (char *)filter, NULL};
-    pid_t dt = load < 0 ? -1 : spawn(dt_argv, dp[1]);
+    /* dramtop starts first, as users run it: its startup calibration, which also corrects its
+     * counts, then has the machine to itself, and the load starts once dramtop samples. */
+    char *dt_argv[] = {(char *)dramtop, "-J", "-P", (char *)filter, NULL};
+    pid_t dt = spawn(dt_argv, dp[1]);
+    int spawn_err = errno;
     close(dp[1]);
-    if (load < 0 || dt < 0) {
-        const char *why = strerror(errno);
-        printf("%-7s %-36s FAIL  (cannot start %s: %s)\n", sc->name, sc->desc, load < 0 ? "the load" : dramtop, why);
+    char line[16384];
+    FILE *df = dt < 0 ? NULL : fdopen(dp[0], "r");
+    bool sampling = df && fgets(line, sizeof line, df);
+    pid_t load = sampling ? spawn(load_argv, lp[1]) : -1;
+    if (sampling && load < 0) spawn_err = errno;
+    close(lp[1]);
+    if (!sampling || load < 0) {
+        printf("%-7s %-36s FAIL  (%s%s%s)\n", sc->name, sc->desc,
+               dt < 0 ? "cannot start dramtop" : !sampling ? "dramtop printed no sample" : "cannot start the load",
+               dt < 0 || sampling ? ": " : "", dt < 0 || sampling ? strerror(spawn_err) : "");
         fflush(stdout);
-        if (load > 0) {
-            kill(load, SIGKILL);
-            waitpid(load, NULL, 0);
+        if (dt > 0) {
+            kill(dt, SIGKILL);
+            waitpid(dt, NULL, 0);
         }
+        if (df) fclose(df);
+        else close(dp[0]);
         close(lp[0]);
-        close(dp[0]);
         return false;
     }
 
     /* Bandwidth the load processes measured themselves, and the window when all of them ran. */
-    char line[16384];
     double truth = 0, start = 0, end = 1e300;
     int reports = 0;
     FILE *lf = fdopen(lp[0], "r");
@@ -270,12 +277,11 @@ static bool run_case(const char *self, const char *dramtop, const char *filter, 
     kill(dt, SIGINT);
     dsample_t s[MAX_SAMPLES];
     int ns = 0;
-    FILE *df = fdopen(dp[0], "r");
-    while (df && fgets(line, sizeof line, df))
+    while (fgets(line, sizeof line, df))
         if (ns < MAX_SAMPLES && json_number(line, "\"timestamp\":", &s[ns].ts) &&
             json_number(line, "\"system\":{\"total_bw_gbs\":", &s[ns].gbs))
             ns++;
-    if (df) fclose(df);
+    fclose(df);
     waitpid(dt, NULL, 0);
 
     /* Default 1-second samples that lie entirely inside the window. */

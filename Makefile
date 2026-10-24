@@ -50,8 +50,8 @@ test: dramtop $(TESTS)
 	@for t in $(TESTS); do ./$$t || exit 1; done
 
 # Each test includes the source file it tests, so it can reach static functions.
-tests/test_counter: tests/test_counter.c tests/check.h src/linux.c $(HDRS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< -o $@ $(LDLIBS)
+tests/test_counter: tests/test_counter.c tests/check.h src/linux.c src/os_posix.c $(HDRS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< src/os_posix.c -o $@ $(LDLIBS)
 
 tests/test_%: tests/test_%.c tests/check.h $(SRCS) $(HDRS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< $(PLAT_SRC) -o $@ $(LDLIBS)

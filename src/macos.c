@@ -278,6 +278,7 @@ static struct {
 
 const char plat_name[] = "macOS";
 const bool plat_pid_children = false;
+const bool plat_cal_single = false;
 
 double gpu_probe_gbs(unsigned long long max_bytes); /* macos_metal.m */
 
@@ -1647,8 +1648,9 @@ void plat_probe_begin(void) {
     amc_read(&g.probe, &skip);
 }
 
-double plat_probe_lines(double bytes) {
+double plat_probe_lines(double bytes, int threads) {
     (void)bytes;
+    (void)threads;
     if (g.approx) return 0;
     amc_t m;
     amc_read(&g.probe, &m);

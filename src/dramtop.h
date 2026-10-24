@@ -121,6 +121,7 @@ typedef struct {
 
 extern const char plat_name[];       /* "Linux", "macOS", "Windows" */
 extern const bool plat_pid_children; /* -p also covers the children that the process starts */
+extern const bool plat_cal_single;   /* the calibration also has one thread read alone */
 bool plat_init(const dt_config_t *cfg, dt_info_t *info); /* prints why and returns false on failure */
 void plat_scan(double now);                               /* process list and CPU time baseline */
 bool plat_has_proc(int pid);
@@ -133,7 +134,8 @@ unsigned long long plat_mem_available(void);
 int plat_cal_cpus(int *cpus, int max); /* CPUs to pin calibration threads to, best first */
 void plat_pin_thread(int cpu);
 void plat_probe_begin(void);   /* count this process's DRAM fills, including threads started later */
-double plat_probe_lines(double bytes); /* cache lines filled since the previous call, in which this process read bytes */
+/* Cache lines filled since the previous call, in which threads of this process read bytes. */
+double plat_probe_lines(double bytes, int threads);
 void plat_probe_end(void);
 
 /* ---- System layer ---- */

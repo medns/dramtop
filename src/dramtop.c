@@ -18,7 +18,7 @@
 #include <time.h>
 
 #ifndef DRAMTOP_VERSION
-#define DRAMTOP_VERSION "1.3.0"
+#define DRAMTOP_VERSION "1.3.1"
 #endif
 
 #define RING_SIZE         64
@@ -30,6 +30,7 @@
 #define CAL_PASSES        4
 #define CAL_PASS_SEC      0.08
 #define CAL_MAX_SWEEPS    32
+#define CAL_SINGLE_BYTES  (256ULL << 20) /* read by one thread alone, where the backend asks for it */
 
 #define RST     "\033[0m"
 #define BOLD    "\033[1m"
@@ -116,7 +117,11 @@ typedef struct {
     os_monitor_t *mon;
     bool go;
     os_barrier_t *bar;
-    int sweeps; /* set by the main thread before each pass is released */
+    int passes;
+    int sweeps;  /* set by the main thread before each pass is released, like single */
+    bool single; /* the first thread reads the whole buffer alone */
+    uint8_t *all;
+    size_t all_len;
 } cal_sync_t;
 
 typedef struct {
@@ -128,6 +133,22 @@ typedef struct {
     uint64_t sink;
 } cal_job_t;
 
+/* One load per cache line moves the whole line from DRAM. */
+static uint64_t cal_read(const uint8_t *base, size_t len, unsigned stride, int sweeps) {
+    size_t step = stride / sizeof(uint64_t), n = len / sizeof(uint64_t);
+    uint64_t s0 = 0, s1 = 0;
+    for (int k = 0; k < sweeps; k++) {
+        const volatile uint64_t *p = (const volatile uint64_t *)base;
+        size_t i = 0;
+        for (; i + step < n; i += 2 * step) {
+            s0 += p[i];
+            s1 += p[i + step];
+        }
+        for (; i < n; i += step) s0 += p[i];
+    }
+    return s0 + s1;
+}
+
 static void cal_worker(void *arg) {
     cal_job_t *j = arg;
     os_monitor_lock(j->sync->mon);
@@ -138,21 +159,11 @@ static void cal_worker(void *arg) {
     if (j->cpu >= 0) plat_pin_thread(j->cpu);
     memset(j->base, 0x5a, j->len); /* first touch puts the pages on this thread's NUMA node */
     os_barrier_wait(j->sync->bar);
-    size_t step = j->stride / sizeof(uint64_t), n = j->len / sizeof(uint64_t);
-    for (int pass = 0; pass < CAL_PASSES; pass++) {
+    for (int pass = 0; pass < j->sync->passes; pass++) {
         os_barrier_wait(j->sync->bar);
-        uint64_t s0 = 0, s1 = 0;
-        for (int k = 0; k < j->sync->sweeps; k++) {
-            /* One load per cache line moves the whole line from DRAM. */
-            const volatile uint64_t *p = (const volatile uint64_t *)j->base;
-            size_t i = 0;
-            for (; i + step < n; i += 2 * step) {
-                s0 += p[i];
-                s1 += p[i + step];
-            }
-            for (; i < n; i += step) s0 += p[i];
-        }
-        j->sink += s0 + s1;
+        cal_sync_t *s = j->sync;
+        if (!s->single) j->sink += cal_read(j->base, j->len, j->stride, s->sweeps);
+        else if (j->base == s->all) j->sink += cal_read(s->all, s->all_len, j->stride, s->sweeps);
         os_barrier_wait(j->sync->bar);
     }
 }
@@ -188,6 +199,9 @@ static double calibrate(void) {
     }
 
     sync.bar = started > 0 ? os_barrier_new(started + 1) : NULL;
+    sync.passes = CAL_PASSES + (plat_cal_single && started > 1 ? 2 : 0);
+    sync.all = buf;
+    sync.all_len = chunk * (size_t)started;
     os_monitor_lock(sync.mon);
     sync.go = true;
     os_monitor_broadcast(sync.mon);
@@ -196,14 +210,14 @@ static double calibrate(void) {
     double best = 0.0;
     if (sync.bar) {
         os_barrier_wait(sync.bar);
-        plat_probe_lines(0.0); /* drop the first-touch traffic */
+        plat_probe_lines(0.0, started); /* drop the first-touch traffic */
         for (int pass = 0; pass < CAL_PASSES; pass++) {
             double t0 = os_now();
             os_barrier_wait(sync.bar);
             os_barrier_wait(sync.bar);
             double dt = os_now() - t0;
             double read = (double)chunk * started * sync.sweeps;
-            double lines = plat_probe_lines(read);
+            double lines = plat_probe_lines(read, started);
             if (dt <= 0) continue;
             if (pass == 0) {
                 /* Warm-up pass: size the timed passes so short scheduler hiccups do not dominate. */
@@ -215,6 +229,18 @@ static double calibrate(void) {
             double pmu = lines * g.info.line / dt / 1e9;
             if (pmu > gbs) gbs = pmu;
             if (gbs > best) best = gbs;
+        }
+        /* One thread alone, for a backend whose counts per line read depend on how many threads
+         * read. Its first sweep replaces the lines that the passes above left in the cache. */
+        if (sync.passes > CAL_PASSES) {
+            int sweeps = (int)(CAL_SINGLE_BYTES / sync.all_len);
+            sync.single = true;
+            for (int pass = 0; pass < 2; pass++) {
+                sync.sweeps = pass == 0 || sweeps < 1 ? 1 : sweeps > CAL_MAX_SWEEPS ? CAL_MAX_SWEEPS : sweeps;
+                os_barrier_wait(sync.bar);
+                os_barrier_wait(sync.bar);
+                plat_probe_lines(pass ? (double)sync.all_len * sync.sweeps : 0.0, 1);
+            }
         }
     }
     for (int i = 0; i < started; i++) os_thread_join(th[i]);

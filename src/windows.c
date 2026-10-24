@@ -1036,7 +1036,8 @@ void plat_probe_begin(void) {
     ReleaseSRWLockExclusive(&g.lock);
 }
 
-double plat_probe_lines(double bytes) {
+double plat_probe_lines(double bytes, int threads) {
+    (void)threads;
     if (g.nprobe < (int)(sizeof g.probe / sizeof g.probe[0])) {
         g.probe[g.nprobe].t = qpc();
         g.probe[g.nprobe++].bytes = bytes;
@@ -1173,6 +1174,7 @@ static void scan_procs(double now) {
 
 const char plat_name[] = "Windows";
 const bool plat_pid_children = false;
+const bool plat_cal_single = false;
 
 bool plat_init(const dt_config_t *cfg, dt_info_t *info) {
     g.cfg = *cfg;
