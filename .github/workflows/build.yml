@@ -103,9 +103,38 @@ jobs:
           path: dramtop-macos-arm64
           if-no-files-found: error
 
+  windows:
+    name: Windows binary (x86_64)
+    needs: check
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      # Hosted runners are virtual machines whose CPU counters ETW cannot use, so only the build and unit tests run here.
+      - name: Build and unit-test (/WX)
+        run: nmake /nologo /f Makefile.msvc test CFLAGS="/nologo /O2 /W4 /WX"
+
+      - name: Build the release binary
+        run: |
+          $version = ""
+          if ($env:GITHUB_REF -like 'refs/tags/v*') { $version = $env:GITHUB_REF_NAME.Substring(1) }
+          nmake /nologo /f Makefile.msvc clean
+          nmake /nologo /f Makefile.msvc VERSION="$version" CFLAGS="/nologo /O2 /W4 /WX"
+          Move-Item dramtop.exe dramtop-windows-x86_64.exe
+          Get-Item dramtop-windows-x86_64.exe | Format-List Name, Length
+          ./dramtop-windows-x86_64.exe --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dramtop-windows-x86_64
+          path: dramtop-windows-x86_64.exe
+          if-no-files-found: error
+
   release:
     name: GitHub Release
-    needs: [build, macos]
+    needs: [build, macos, windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
@@ -119,7 +148,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum dramtop-linux-* dramtop-macos-* > SHA256SUMS
+          sha256sum dramtop-linux-* dramtop-macos-* dramtop-windows-* > SHA256SUMS
           cat SHA256SUMS
 
       - uses: softprops/action-gh-release@v3
@@ -129,4 +158,5 @@ jobs:
           files: |
             dist/dramtop-linux-*
             dist/dramtop-macos-*
+            dist/dramtop-windows-*
             dist/SHA256SUMS

@@ -576,7 +576,8 @@ void plat_probe_begin(void) {
         if (g.ev[i].kind <= EV_TOTAL) g.probe.fd[i] = perf_open(&g.ev[i], 0, -1, true);
 }
 
-double plat_probe_lines(void) {
+double plat_probe_lines(double bytes) {
+    (void)bytes;
     uint64_t acc[EV_KINDS] = {0};
     cs_read(&g.probe, acc);
     return (double)total_lines(acc);
@@ -823,6 +824,7 @@ static void scan_procs(double now) {
 /* ------------------------------------------------------------------ */
 
 const char plat_name[] = "Linux";
+const bool plat_pid_children = true;
 
 bool plat_init(const dt_config_t *cfg, dt_info_t *info) {
     g.cfg = *cfg;

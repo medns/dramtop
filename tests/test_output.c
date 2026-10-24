@@ -112,6 +112,15 @@ static void test_platform_columns(void) {
     p.m.has_bw = true;
     CHECK_INT(conf_mark(&p), ' ');
 
+    g.info = (dt_info_t){.has_rw = true, .rw_system_only = true}; /* Windows with the memory controller counters */
+    t = timeline_titles();
+    CHECK_STR(t[0], "READ");
+    CHECK_STR(t[1], "WRITE");
+    CHECK_STR(t[2], "IPC");
+    CHECK(!proc_rw());
+    g.info.rw_system_only = false;
+    CHECK(proc_rw());
+
     g.info = (dt_info_t){.has_rw = true, .rw_total_only = true, .has_gpu = true}; /* a Mac giving the total only */
     sample_t s = {.m = {.read_gbs = 30.0, .gpu_pct = 40.0}};
     char c3[24], c4[24], c7[16];

@@ -1,0 +1,2 @@
+// The signed PawnIO module that reads the memory controller's counters; see third_party/pawnio.
+PAWNIO_MCHBAR RCDATA "third_party\\pawnio\\IntelMCHBAR.bin"

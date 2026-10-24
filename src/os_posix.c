@@ -172,6 +172,8 @@ void os_barrier_wait(os_barrier_t *b) {
 
 bool os_isatty(int fd) { return isatty(fd) == 1; }
 
+const char os_dumb_term[] = "TERM is unset or \"dumb\"";
+
 /* Same rule as git: without TERM there is no color and no cursor addressing. */
 bool os_term_dumb(void) {
     const char *term = getenv("TERM");

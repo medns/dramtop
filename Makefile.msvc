@@ -1,0 +1,54 @@
+# Windows build with the MSVC tools, from a Developer Command Prompt:
+#   nmake /f Makefile.msvc [test | clean] [VERSION=x.y.z] [CFLAGS="..."]
+
+CC     = cl
+RC     = rc
+CFLAGS = /nologo /O2 /W4
+# The C runtime that Windows 10 and later include (UCRT) is linked dynamically and the rest
+# statically, so the binary needs no Visual C++ redistributable.
+LIBS   = advapi32.lib ntdll.lib /NODEFAULTLIB:libucrt.lib ucrt.lib
+OBJDIR = build
+
+# Always applied, whatever CFLAGS is set to on the command line.
+DT_CFLAGS = /std:c11 /utf-8 /D_CRT_SECURE_NO_WARNINGS
+!IF "$(VERSION)" != ""
+DT_CFLAGS = $(DT_CFLAGS) /DDRAMTOP_VERSION=\"$(VERSION)\"
+!ENDIF
+
+HDRS     = src\dramtop.h
+PLAT_SRC = src\os_win.c src\windows.c
+SRCS     = src\dramtop.c $(PLAT_SRC)
+TESTS    = tests\test_diagnose.exe tests\test_output.exe tests\test_cli.exe
+
+all: dramtop.exe
+
+$(OBJDIR):
+	@if not exist $(OBJDIR) mkdir $(OBJDIR)
+
+# The signed PawnIO module for the memory controller's counters (third_party\pawnio).
+$(OBJDIR)\windows.res: $(OBJDIR) src\windows.rc third_party\pawnio\IntelMCHBAR.bin
+	$(RC) /nologo /fo $@ src\windows.rc
+
+dramtop.exe: $(OBJDIR) $(SRCS) $(HDRS) $(OBJDIR)\windows.res
+	$(CC) $(CFLAGS) $(DT_CFLAGS) /Fo$(OBJDIR)\ $(SRCS) $(OBJDIR)\windows.res /Fe$@ /link $(LIBS)
+
+test: dramtop.exe $(TESTS)
+	.\dramtop.exe --version
+	.\dramtop.exe --help > NUL
+	tests\test_diagnose.exe
+	tests\test_output.exe
+	tests\test_cli.exe
+
+# Each test includes the source file it tests, so it can reach static functions.
+tests\test_diagnose.exe: $(OBJDIR) tests\test_diagnose.c tests\check.h $(SRCS) $(HDRS)
+	$(CC) $(CFLAGS) $(DT_CFLAGS) /Fo$(OBJDIR)\ tests\test_diagnose.c $(PLAT_SRC) /Fe$@ /link $(LIBS)
+
+tests\test_output.exe: $(OBJDIR) tests\test_output.c tests\check.h $(SRCS) $(HDRS)
+	$(CC) $(CFLAGS) $(DT_CFLAGS) /Fo$(OBJDIR)\ tests\test_output.c $(PLAT_SRC) /Fe$@ /link $(LIBS)
+
+tests\test_cli.exe: $(OBJDIR) tests\test_cli.c tests\check.h $(SRCS) $(HDRS)
+	$(CC) $(CFLAGS) $(DT_CFLAGS) /Fo$(OBJDIR)\ tests\test_cli.c $(PLAT_SRC) /Fe$@ /link $(LIBS)
+
+clean:
+	-@if exist $(OBJDIR) rmdir /s /q $(OBJDIR)
+	-@del /q dramtop.exe $(TESTS) 2> NUL

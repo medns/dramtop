@@ -18,7 +18,7 @@
 #include <time.h>
 
 #ifndef DRAMTOP_VERSION
-#define DRAMTOP_VERSION "1.2.1"
+#define DRAMTOP_VERSION "1.3.0"
 #endif
 
 #define RING_SIZE         64
@@ -196,13 +196,14 @@ static double calibrate(void) {
     double best = 0.0;
     if (sync.bar) {
         os_barrier_wait(sync.bar);
-        plat_probe_lines(); /* drop the first-touch traffic */
+        plat_probe_lines(0.0); /* drop the first-touch traffic */
         for (int pass = 0; pass < CAL_PASSES; pass++) {
             double t0 = os_now();
             os_barrier_wait(sync.bar);
             os_barrier_wait(sync.bar);
             double dt = os_now() - t0;
-            double lines = plat_probe_lines();
+            double read = (double)chunk * started * sync.sweeps;
+            double lines = plat_probe_lines(read);
             if (dt <= 0) continue;
             if (pass == 0) {
                 /* Warm-up pass: size the timed passes so short scheduler hiccups do not dominate. */
@@ -210,7 +211,7 @@ static double calibrate(void) {
                 sync.sweeps = sweeps < 1 ? 1 : sweeps > CAL_MAX_SWEEPS ? CAL_MAX_SWEEPS : sweeps;
                 continue;
             }
-            double gbs = (double)chunk * started * sync.sweeps / dt / 1e9;
+            double gbs = read / dt / 1e9;
             double pmu = lines * g.info.line / dt / 1e9;
             if (pmu > gbs) gbs = pmu;
             if (gbs > best) best = gbs;
@@ -426,6 +427,9 @@ DT_PRINTF(1, 2) static void out_line(const char *fmt, ...) {
     g_line++;
 }
 
+/* Each process has its own read and write columns. */
+static bool proc_rw(void) { return g.info.has_rw && !g.info.rw_system_only; }
+
 /* Estimated per-process traffic is marked '~' or '?' when other processes shared its CPU cluster or the GPU. */
 static char conf_mark(const dt_proc_t *p) {
     if (!g.info.estimated || p == &g.other || !p->m.has_bw || p->confidence >= 0.75) return ' ';
@@ -441,7 +445,7 @@ static void proc_header(void) {
         return;
     }
     out_line("%s================================== [ TOP PROCESSES BY DRAM BANDWIDTH ] ===================================", C(CYAN));
-    if (g.info.has_rw)
+    if (proc_rw())
         out_line(" %s%-7s | %-15s | %-4s | %-12s | %-10s | %-11s | %-17s | %-6s | %-5s | %-4s | %s%s", C(WHITE), "PID",
                  "PROCESS", "THR", g.info.estimated ? "DRAM (EST.)" : "DRAM TOTAL", "READ", "WRITE", "DRAM UTIL%", "CPU%",
                  "GPU%", "IPC", "BOTTLENECK", C(RST));
@@ -467,7 +471,7 @@ static void proc_row(const dt_proc_t *p) {
     }
     if (p->m.has_bw) snprintf(up, sizeof up, "%5.1f%%", p->m.util_pct);
     else snprintf(up, sizeof up, "%6s", "-");
-    if (g.info.has_rw) {
+    if (proc_rw()) {
         out_line(" %-7s | %-15.15s | %4s | %s%c | %s | %s | %s %s | %5.0f%% | %4.0f%% | %s | %s%s%s", pid, p->name, thr,
                  fmt_bw(tot, sizeof tot, p->m.has_bw, p->m.total_gbs, 6), conf_mark(p),
                  fmt_bw(dem, sizeof dem, p->m.has_bw, p->m.read_gbs, 5),
@@ -697,8 +701,8 @@ static void print_json(const sample_t *s) {
         json_bw("demand_bw_gbs", split, p->m.demand_gbs);
         json_bw("prefetch_bw_gbs", split, p->m.prefetch_gbs);
         if (g.info.has_rw) {
-            json_bw("read_bw_gbs", p->m.has_bw, p->m.read_gbs);
-            json_bw("write_bw_gbs", p->m.has_bw, p->m.write_gbs);
+            json_bw("read_bw_gbs", p->m.has_bw && proc_rw(), p->m.read_gbs);
+            json_bw("write_bw_gbs", p->m.has_bw && proc_rw(), p->m.write_gbs);
         }
         printf("\"util_pct\":%.2f,\"cpu_pct\":%.1f,", p->m.util_pct, p->m.cpu_pct);
         if (g.info.has_gpu) {
@@ -789,7 +793,7 @@ static void usage(FILE *out) {
             "dramtop v%s - real-time DRAM bandwidth monitor for %s\n\n"
             "Usage: dramtop [options]\n\n"
             "Options:\n"
-            "  -p, --pid <PID>        Monitor a single process (and children it forks)\n"
+            "  -p, --pid <PID>        Monitor a single process%s\n"
             "  -P, --proc <NAME>      Monitor processes whose name contains NAME\n"
             "  -i, --interval <SEC>   Refresh interval in seconds (default: 1.0)\n"
             "  -n, --count <N>        Exit after N samples (default: run until stopped)\n"
@@ -800,8 +804,8 @@ static void usage(FILE *out) {
             "  -v, --version          Print version and exit\n"
             "  -h, --help             Show this help\n\n"
             "Colors are also disabled when NO_COLOR is set or output is not a terminal.\n"
-            "If TERM is unset or \"dumb\", line output is used instead of the full-screen TUI.\n",
-            DRAMTOP_VERSION, plat_name);
+            "If %s, line output is used instead of the full-screen TUI.\n",
+            DRAMTOP_VERSION, plat_name, plat_pid_children ? " (and children it forks)" : "", os_dumb_term);
 }
 
 enum { ARGS_OK, ARGS_HELP, ARGS_VERSION, ARGS_ERROR };
@@ -963,7 +967,7 @@ int main(int argc, char **argv) {
     }
     outmode_t om = output_mode(&g.o, getenv("NO_COLOR"), os_term_dumb(), os_isatty(0), os_isatty(1), os_isatty(2));
     if (om.warn_dumb)
-        fputs("dramtop: TERM is unset or \"dumb\", using line output (set TERM for the full-screen view)\n", stderr);
+        fprintf(stderr, "dramtop: %s, using line output instead of the full-screen view\n", os_dumb_term);
     g.o.batch = om.batch;
     g_color = om.color;
 

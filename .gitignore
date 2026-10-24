@@ -5,6 +5,10 @@ dramtop-linux-*
 SHA256SUMS
 *.o
 *.out
+dramtop.exe
+build/
+*.obj
+*.pdb
 tests/*
 !tests/*.c
 !tests/*.h

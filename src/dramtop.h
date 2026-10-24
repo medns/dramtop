@@ -2,9 +2,10 @@
  * dramtop - real-time DRAM bandwidth monitor
  *
  * Types shared by all source files and the two platform interfaces:
- *   - the collection backend (linux.c, macos.c): CPU detection, process
- *     tracking and hardware counters;
- *   - the system layer (os_posix.c): time, threads, terminal and signals.
+ *   - the collection backend (linux.c, macos.c, windows.c): CPU detection,
+ *     process tracking and hardware counters;
+ *   - the system layer (os_posix.c, os_win.c): time, threads, terminal and
+ *     signals.
  * dramtop.c holds everything else and uses only standard C.
  *
  * Copyright (c) 2026 Super Zheng (https://github.com/medns). MIT License.
@@ -85,6 +86,7 @@ typedef struct {
     bool has_split;      /* demand reads and prefetch fills are counted separately */
     bool has_rw;         /* DRAM reads and writes are counted separately */
     bool rw_total_only;  /* the platform splits reads and writes, but this chip gives only their sum */
+    bool rw_system_only; /* reads and writes are split for the whole system, not for each process */
     bool has_cfs;        /* cgroup CPU throttling is tracked */
     bool has_gpu;        /* per-process GPU time and CPU energy are reported */
     bool estimated;      /* per-process traffic is apportioned, not counted */
@@ -117,7 +119,8 @@ typedef struct {
 
 /* ---- Collection backend ---- */
 
-extern const char plat_name[]; /* "Linux", "macOS" */
+extern const char plat_name[];       /* "Linux", "macOS", "Windows" */
+extern const bool plat_pid_children; /* -p also covers the children that the process starts */
 bool plat_init(const dt_config_t *cfg, dt_info_t *info); /* prints why and returns false on failure */
 void plat_scan(double now);                               /* process list and CPU time baseline */
 bool plat_has_proc(int pid);
@@ -130,7 +133,7 @@ unsigned long long plat_mem_available(void);
 int plat_cal_cpus(int *cpus, int max); /* CPUs to pin calibration threads to, best first */
 void plat_pin_thread(int cpu);
 void plat_probe_begin(void);   /* count this process's DRAM fills, including threads started later */
-double plat_probe_lines(void); /* cache lines filled since the previous call */
+double plat_probe_lines(double bytes); /* cache lines filled since the previous call, in which this process read bytes */
 void plat_probe_end(void);
 
 /* ---- System layer ---- */
@@ -161,6 +164,7 @@ void os_barrier_wait(os_barrier_t *b);
 
 bool os_isatty(int fd);  /* 0: stdin, 1: stdout, 2: stderr */
 bool os_term_dumb(void); /* the terminal can do neither colors nor cursor addressing */
+extern const char os_dumb_term[]; /* what os_term_dumb() checks, for --help and the warning */
 int os_term_rows(void);
 bool os_term_raw(bool on);       /* key-at-a-time input without echo; false if not possible */
 int os_read_key(double timeout); /* 0 on timeout */
