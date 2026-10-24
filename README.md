@@ -50,7 +50,9 @@ Invoke-WebRequest "https://github.com/medns/dramtop/releases/latest/download/dra
 
 **Linux**
 
-- Counts the cache lines that CPU cores read from DRAM, including hardware prefetch but not write-backs or device DMA; results closely match a software-timed read benchmark
+- Counts the cache lines that CPU cores read from DRAM, including hardware prefetch but not write-backs or device DMA
+- The startup calibration measures how far these counts run above the lines actually read, with all cores reading and with one; Intel's last-level cache misses run higher the more cores read at once. Each sample is corrected for the number of CPUs reading at the time, so streaming reads come out close to the actual traffic. Without per-CPU counters, as in most containers, the correction measured with all cores applies throughout; skipping the calibration with `-c` also skips the correction
+- Where the kernel offers the memory controller's counters, on Intel client and server CPUs from Sandy Bridge on and on AMD Zen 4 and later with Linux 6.7 or later, the memory controller counts the read and write bandwidth of the whole machine, including write-backs, non-temporal stores, the GPU and devices. Each process then gets its share, estimated from its counts: reads by its cache misses and, on Intel CPUs from Haswell on, writes by its stores' requests for cache lines (RFOs). Traffic that neither explains, such as non-temporal stores and DMA, is shown as `[kernel/ephem]`. Virtual machines have no such counters
 - Utilization is relative to the read bandwidth the machine can actually reach, measured at startup in under a second; 100% means the memory bandwidth is saturated
 - Separate demand-read and L1/L2 hardware-prefetch bandwidth on AMD Zen and Intel; Arm64 reports only the total
 - Container support: falls back to per-thread counters when system-wide counters are unavailable, and reports the cgroup's CPU quota and throttling
@@ -105,6 +107,7 @@ Keyboard shortcuts in the full-screen interface: `q` quit, `t` / `Tab` switch vi
 
 - Hardware performance counters. Bare metal works; a VM needs a virtual PMU, which most cloud VMs do not provide. Current WSL2 releases provide one; dramtop in WSL2 then shows only the traffic of the WSL2 VM, not that of Windows.
 - Root, or `CAP_PERFMON` on Linux 5.8+. Normal users only see their own processes and need `kernel.perf_event_paranoid` set to 2 or lower; the system-wide `Per-CPU System PMU` mode needs 0 or lower.
+- The memory controller counters need the same rights as the system-wide mode, and are not used with `-p` or `-P`.
 - Docker blocks `perf_event_open` by default, so start the container with `--cap-add PERFMON` (or `--privileged`). On Kubernetes, add the `PERFMON` capability.
 
 **macOS**

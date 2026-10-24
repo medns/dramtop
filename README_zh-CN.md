@@ -50,7 +50,9 @@ Invoke-WebRequest "https://github.com/medns/dramtop/releases/latest/download/dra
 
 **Linux**
 
-- 统计 CPU 从 DRAM 读入的缓存行，包括硬件预取，不包括写回和设备 DMA；与软件计时的读带宽测试结果基本一致
+- 统计 CPU 从 DRAM 读入的缓存行，包括硬件预取，不包括写回和设备 DMA
+- 启动标定时，会分别在所有核心同时读取和只有一个核心读取的情况下，测出这些计数比实际读入的缓存行多出多少；Intel 的末级缓存未命中次数，同时读取的核心越多，多出的就越多。每次采样都按当时在读内存的 CPU 数量校正，因此流式读取的读数接近实际流量。没有每 CPU 计数器时（例如大多数容器中），始终使用所有核心同时读取时测出的校正；用 `-c` 跳过启动标定，也会同时跳过这一校正
+- 内核提供内存控制器计数器时（Sandy Bridge 以后的 Intel 客户端和服务器 CPU，以及 Linux 6.7 起的 AMD Zen 4 及更新的 CPU），整机的读写带宽由内存控制器计数，包括写回、非临时存储、GPU 和设备的流量。各进程的流量按其计数估算：读流量按缓存未命中次数分摊；在 Haswell 以后的 Intel CPU 上，写流量按其存储指令请求缓存行（RFO）的次数分摊。两者都对应不上的流量（例如非临时存储和 DMA）显示在 `[kernel/ephem]` 中。虚拟机中没有这些计数器
 - 利用率以本机实测可达到的读带宽为基准，该带宽在启动时测量，耗时不到 1 秒；利用率达到 100% 表示带宽已经饱和
 - 在 AMD Zen 和 Intel 上分别显示按需读取和 L1/L2 硬件预取的带宽；Arm64 上只显示总量
 - 支持容器环境：无法使用整机计数器时自动改用线程级计数器，并显示 cgroup 的 CPU 配额和限流情况
@@ -105,6 +107,7 @@ dramtop -J -n 5 | jq .       # 每次采样输出一行 JSON
 
 - 需要硬件性能计数器（PMU）。物理机可以直接使用；虚拟机需要开启虚拟 PMU，大多数云主机不提供。当前版本的 WSL2 提供虚拟 PMU，在 WSL2 中运行时只显示 WSL2 虚拟机自身的流量，不包括 Windows 的流量。
 - 以 root 运行，或授予 `CAP_PERFMON`（Linux 5.8+）。普通用户只能看到自己的进程，且要求 `kernel.perf_event_paranoid` 不大于 2；整机模式（`Per-CPU System PMU`）要求不大于 0。
+- 内存控制器计数器需要与整机模式相同的权限，使用 `-p` 或 `-P` 时不使用。
 - Docker 默认拦截 `perf_event_open`，启动容器时需要加上 `--cap-add PERFMON`（或 `--privileged`）；在 Kubernetes 中需要为容器添加 `PERFMON` capability。
 
 **macOS**
