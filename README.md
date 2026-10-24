@@ -2,14 +2,14 @@
 
 dramtop is an ultra-lightweight (~130 KB), dependency-free, `top`-like command-line tool that shows real-time DRAM bandwidth (`GB/s`) for the whole system and for each process, and identifies whether a workload is bound by memory bandwidth or by compute. For bandwidth-sensitive workloads such as LLM inference and databases, it shows which processes consume the bandwidth and how much headroom the machine has left.
 
-It supports Linux and Apple Silicon Macs. On macOS, the memory traffic that a process generates on the GPU and the Neural Engine is attributed to that process.
+It supports Linux, Apple Silicon Macs and Windows on Intel and AMD Zen CPUs. On macOS, the memory traffic that a process generates on the GPU and the Neural Engine is attributed to that process.
 
 **English** · [简体中文](README_zh-CN.md)
 
 [![Latest Release](https://img.shields.io/github/v/release/medns/dramtop?color=2563eb)](https://github.com/medns/dramtop/releases)
 [![Build](https://github.com/medns/dramtop/actions/workflows/build.yml/badge.svg)](https://github.com/medns/dramtop/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Linux_x86__64_·_ARM64_·_macOS-2563eb.svg)](#-quick-start)
+[![Platform](https://img.shields.io/badge/platform-Linux_x86__64_·_ARM64_·_macOS_·_Windows-2563eb.svg)](#-quick-start)
 
 ![dramtop live terminal dashboard](docs/demo.svg)
 
@@ -34,6 +34,13 @@ sudo chmod +x /usr/local/bin/dramtop
 sudo dramtop
 ```
 
+Windows (x86_64), in PowerShell opened as administrator:
+
+```powershell
+Invoke-WebRequest "https://github.com/medns/dramtop/releases/latest/download/dramtop-windows-x86_64.exe" -OutFile dramtop.exe
+.\dramtop.exe
+```
+
 ## ✨ Features
 
 - Processes sorted by real-time DRAM bandwidth, so the heaviest users of memory bandwidth are easy to identify
@@ -56,6 +63,16 @@ sudo dramtop
 - Per-process values are estimates, with counts settled at every context switch. The estimate is close to the actual traffic when a process has a CPU cluster to itself; when several busy processes share a cluster or the GPU, the split may be less accurate and the affected rows are marked `~` or `?`
 - On some newer chips, macOS opens these counters only to Apple's own services. dramtop then switches to an approximate mode by itself: the whole chip and its parts are read from the memory controller's bandwidth histograms, which read low under very heavy traffic. Where macOS publishes only the chip total, only the total is shown. Per-process bandwidth is then only a rough estimate, and only where macOS lets dramtop configure the CPU counters; otherwise only each process's GPU traffic is shown
 
+**Windows**
+
+- Estimates the DRAM reads of the CPU cores from hardware counters that the kernel's event tracing (ETW) records for each thread, so no driver is needed: last-level cache misses on Intel, and on AMD Zen the cache fills from DRAM, as on Linux. The startup calibration measures how far these counts differ from the actual reads of a streaming load and scales all readings by that, so streaming reads come out close to the actual traffic. Other access patterns read less accurately: write-heavy loads show only part of their traffic, and on Intel, random reads read high
+- Hardware prefetch is included; write-backs, non-temporal stores and device DMA are not. On AMD Zen, demand reads and hardware prefetch are shown separately; on Intel, only the total
+- Windows offers no DRAM events for AMD CPUs, so dramtop registers them as custom CPU counters when it starts, as WPR does with custom counters. They are removed when dramtop exits and do not survive a restart; those left by a dramtop that was killed are taken over and removed by the next run. If the CPU cannot count all of them at once, the instruction and cycle counters are left out first, and IPC then shows `-`
+- With [PawnIO](https://pawnio.eu/) installed, dramtop reads the memory controller's counters on Intel Core processors from Sandy Bridge to Comet Lake (2nd to 10th generation, except Ice Lake): the read and write bandwidth of the whole machine is then exact and includes the GPU, devices and virtual machines. Each process gets its share of the cores' traffic, estimated from its cache misses; traffic that causes no misses, such as non-temporal stores, is shown as `[kernel/ephem]`
+- Utilization is relative to the read bandwidth the machine can actually reach, measured at startup, as on Linux
+- Readings trail real time by about a second, because Windows delivers the trace in batches
+- Virtual machines, including WSL2 and Windows Sandbox, have core counters of their own, so their processes are not seen from Windows; with PawnIO, their traffic is part of the machine's total
+
 ## 💻 Usage
 
 ```sh
@@ -74,7 +91,7 @@ dramtop -J -n 5 | jq .       # one JSON object per sample
 | `-i, --interval <S>` | Refresh interval in seconds (default `1`) |
 | `-n, --count <N>` | Exit after N samples |
 | `-c, --ceiling <GB/s>` | Set the peak bandwidth instead of measuring it at startup |
-| `-b, --batch` | One line of text per sample instead of the full-screen interface. Enabled automatically when output is not a terminal, or when `TERM` is unset or `dumb` |
+| `-b, --batch` | One line of text per sample instead of the full-screen interface. Enabled automatically when output is not a terminal, or when `TERM` is unset or `dumb` (on Windows: when it is `dumb`, or the console cannot show escape sequences) |
 | `-J, --json` | One JSON object per sample |
 | `--no-color` | Disable colors (setting `NO_COLOR` has the same effect) |
 | `-v, --version` | Print the version |
@@ -86,7 +103,7 @@ Keyboard shortcuts in the full-screen interface: `q` quit, `t` / `Tab` switch vi
 
 **Linux**
 
-- Hardware performance counters. Bare metal works; a VM needs a virtual PMU, which most cloud VMs and WSL2 do not provide.
+- Hardware performance counters. Bare metal works; a VM needs a virtual PMU, which most cloud VMs do not provide. Current WSL2 releases provide one; dramtop in WSL2 then shows only the traffic of the WSL2 VM, not that of Windows.
 - Root, or `CAP_PERFMON` on Linux 5.8+. Normal users only see their own processes and need `kernel.perf_event_paranoid` set to 2 or lower; the system-wide `Per-CPU System PMU` mode needs 0 or lower.
 - Docker blocks `perf_event_open` by default, so start the container with `--cap-add PERFMON` (or `--privileged`). On Kubernetes, add the `PERFMON` capability.
 
@@ -95,6 +112,14 @@ Keyboard shortcuts in the full-screen interface: `q` quit, `t` / `Tab` switch vi
 - An Apple Silicon Mac. Virtual machines do not expose the memory controller counters.
 - Per-process bandwidth requires `sudo`; without it, the process list shows only each process's GPU traffic, split by GPU time. `-p` and `-P` can only be used when per-process bandwidth is available. In approximate mode, per-process bandwidth is a rough estimate at best.
 - Per-process sampling uses the CPU counters and kernel tracing, so it is disabled automatically while Instruments' CPU Counters or another tool is using them.
+
+**Windows**
+
+- An Intel CPU and Windows 10 or later, or an AMD Zen CPU and Windows 10 version 1903 or later, the version that added custom CPU counters.
+- A terminal opened as administrator ("Run as administrator").
+- The CPU counters serve one trace session at a time, so dramtop does not start while WPR or xperf with CPU counters, VTune or another dramtop is using them.
+- In a virtual machine, the host has to expose the CPU counters to the guest.
+- The memory controller counters need one of the Intel CPUs listed above and PawnIO (`winget install namazso.PawnIO`); dramtop uses it by itself when it is installed. Otherwise, skipping the startup calibration with `-c` also skips the correction of the estimate.
 
 ## 🛠️ Build from Source
 
@@ -105,6 +130,14 @@ git clone https://github.com/medns/dramtop.git
 cd dramtop
 make && sudo make install
 ```
+
+On Windows you need Visual Studio or the Build Tools for Visual Studio with the C++ workload. In a Developer Command Prompt (x64), run:
+
+```bat
+nmake /f Makefile.msvc
+```
+
+The Windows binary embeds PawnIO's signed IntelMCHBAR module, which is licensed under the LGPL 2.1; see [third_party/pawnio](third_party/pawnio).
 
 To build a static Linux binary (this is how the Linux release builds are made, with musl on Alpine):
 

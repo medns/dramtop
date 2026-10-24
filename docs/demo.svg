@@ -50,7 +50,7 @@
 <text x="595" y="22" text-anchor="middle" class="t gray">root@epyc-server: ~ &#8212; dramtop</text>
 <text x="1172" y="22" text-anchor="end" class="t gray">Linux</text>
 <text x="18" y="56" class="t" xml:space="preserve"><tspan class="cyan">==========================================================================================================</tspan></text>
-<text x="18" y="74" class="t" xml:space="preserve"><tspan class="white"> dramtop v1.2.1</tspan>  |  CPU: <tspan class="yellow">AMD EPYC 9754 128-Core Processor</tspan> (Quota: 32.0 cores / 64 logical)</text>
+<text x="18" y="74" class="t" xml:space="preserve"><tspan class="white"> dramtop v1.3.0</tspan>  |  CPU: <tspan class="yellow">AMD EPYC 9754 128-Core Processor</tspan> (Quota: 32.0 cores / 64 logical)</text>
 <text x="18" y="92" class="t" xml:space="preserve"> PMU Backend   : AMD Zen PMU (demand + L1/L2 HW prefetch DRAM fills)</text>
 <text x="18" y="110" class="t" xml:space="preserve"> Monitor Scope : <tspan class="green">Per-CPU System PMU (pid=-1, 64 CPUs, Kernel+User)</tspan> (18 procs)  |  Refresh: 1.00s  |  View: <tspan class="purple">Split</tspan></text>
 <text x="18" y="128" class="t" xml:space="preserve"><tspan class="cyan">----------------------------------------------------------------------------------------------------------</tspan></text>
@@ -67,7 +67,7 @@
 <text x="595" y="22" text-anchor="middle" class="t gray">dev@macbook-air: ~ &#8212; sudo dramtop</text>
 <text x="1172" y="22" text-anchor="end" class="t gray">macOS</text>
 <text x="18" y="56" class="t" xml:space="preserve"><tspan class="cyan">==========================================================================================================</tspan></text>
-<text x="18" y="74" class="t" xml:space="preserve"><tspan class="white"> dramtop v1.2.1</tspan>  |  CPU: <tspan class="yellow">Apple M2 (4P+4E, 10-core GPU)</tspan> (8 logical CPUs)</text>
+<text x="18" y="74" class="t" xml:space="preserve"><tspan class="white"> dramtop v1.3.0</tspan>  |  CPU: <tspan class="yellow">Apple M2 (4P+4E, 10-core GPU)</tspan> (8 logical CPUs)</text>
 <text x="18" y="92" class="t" xml:space="preserve"> PMU Backend   : Apple memory controller counters (procs: estimated)</text>
 <text x="18" y="110" class="t" xml:space="preserve"> Monitor Scope : <tspan class="green">Whole chip (AMC)</tspan> (487 procs)  |  Refresh: 1.00s  |  View: <tspan class="purple">Split</tspan></text>
 <text x="18" y="128" class="t" xml:space="preserve"><tspan class="cyan">----------------------------------------------------------------------------------------------------------</tspan></text>
